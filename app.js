@@ -14,15 +14,16 @@ let state = {
   goals: [],   // { id, title, desc, emoji, createdAt }
   tasks: [],   // { id, goalId, title, deadline, effort, status, note, createdAt, completedAt }
   memos: [],   // { id, text, createdAt }
-  settings: { deadlineWeight: 0.5, aiModel: "claude-opus-4-8", sortMode: "score" },
+  settings: { deadlineWeight: 0.5, aiProvider: "claude", aiModel: "claude-opus-4-8", geminiModel: "gemini-2.5-flash", sortMode: "score" },
   aiSuggestion: null, // { orderIds, text, createdAt, model, signature }
   aiContext: null,    // { ids: [taskId...] } — 直近に生成したプロンプトのタスク番号対応
 };
 
-const API_KEY_STORAGE = "dandori.apiKey"; // APIキーは本体stateとは別に保存（エクスポートに混ざらないよう）
+// APIキーはプロバイダ別に、本体stateとは別保存（エクスポートに混ざらないよう）
+const API_KEY_STORAGE = { claude: "dandori.apiKey", gemini: "dandori.geminiKey" };
 
 function defaultSettings() {
-  return { deadlineWeight: 0.5, aiModel: "claude-opus-4-8", sortMode: "score" };
+  return { deadlineWeight: 0.5, aiProvider: "claude", aiModel: "claude-opus-4-8", geminiModel: "gemini-2.5-flash", sortMode: "score" };
 }
 
 let activeGoalFilter = "all";
@@ -691,20 +692,26 @@ function init() {
     switchTab("priority");
   });
   document.getElementById("ai-apply-paste").addEventListener("click", aiApplyPaste);
+  document.getElementById("ai-provider").addEventListener("change", (e) => {
+    state.settings.aiProvider = e.target.value;
+    save();
+    renderAi();
+  });
   document.getElementById("ai-model").addEventListener("change", (e) => {
-    state.settings.aiModel = e.target.value;
+    if (currentProvider() === "gemini") state.settings.geminiModel = e.target.value;
+    else state.settings.aiModel = e.target.value;
     save();
   });
   document.getElementById("ai-key-save").addEventListener("click", () => {
     const input = document.getElementById("ai-key");
     const v = input.value.trim();
-    setApiKey(v);
+    setApiKey(currentProvider(), v);
     input.value = "";
     renderAi();
     setAiStatus(v ? "APIキーを保存しました。" : "キーが空のため削除しました。");
   });
   document.getElementById("ai-key-clear").addEventListener("click", () => {
-    setApiKey("");
+    setApiKey(currentProvider(), "");
     document.getElementById("ai-key").value = "";
     renderAi();
     setAiStatus("APIキーを削除しました。");
@@ -753,15 +760,34 @@ function init() {
  * AI提案：プロンプト生成 / 直接依頼（Claude API） / 適用
  * ======================================================= */
 
-/* ---- APIキー（state とは別保存） ---- */
-function getApiKey() {
-  try { return localStorage.getItem(API_KEY_STORAGE) || ""; } catch (e) { return ""; }
+/* ---- プロバイダ / モデル / APIキー（state とは別保存） ---- */
+const MODEL_OPTIONS = {
+  claude: [
+    { value: "claude-opus-4-8", label: "Claude Opus 4.8 — 高品質（既定）" },
+    { value: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — バランス" },
+    { value: "claude-haiku-4-5", label: "Claude Haiku 4.5 — 高速・低コスト" },
+  ],
+  gemini: [
+    { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash — 高速・低コスト（既定）" },
+    { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash — 高性能" },
+    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro — 最上位" },
+    { value: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite — 最安" },
+  ],
+};
+
+function currentProvider() { return state.settings.aiProvider || "claude"; }
+function currentModel() {
+  return currentProvider() === "gemini"
+    ? (state.settings.geminiModel || "gemini-2.5-flash")
+    : (state.settings.aiModel || "claude-opus-4-8");
 }
-function setApiKey(k) {
-  try {
-    if (k) localStorage.setItem(API_KEY_STORAGE, k);
-    else localStorage.removeItem(API_KEY_STORAGE);
-  } catch (e) { /* ignore */ }
+function getApiKey(provider) {
+  const k = API_KEY_STORAGE[provider || currentProvider()];
+  try { return localStorage.getItem(k) || ""; } catch (e) { return ""; }
+}
+function setApiKey(provider, val) {
+  const k = API_KEY_STORAGE[provider || currentProvider()];
+  try { if (val) localStorage.setItem(k, val); else localStorage.removeItem(k); } catch (e) { /* ignore */ }
 }
 
 /* ---- プロンプト生成（タスク番号→id対応も返す） ---- */
@@ -890,6 +916,62 @@ async function streamClaude(prompt, onText) {
   return full;
 }
 
+/* ---- Gemini API（ブラウザ直叩き・ストリーミング） ---- */
+async function streamGemini(prompt, onText) {
+  const key = getApiKey("gemini");
+  const model = state.settings.geminiModel || "gemini-2.5-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 2000 },
+    }),
+  });
+
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const e = await res.json(); if (e && e.error && e.error.message) msg = e.error.message; } catch (e) { /* ignore */ }
+    throw new Error(msg);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const data = t.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      let ev;
+      try { ev = JSON.parse(data); } catch (e) { continue; }
+      const parts = ev && ev.candidates && ev.candidates[0] && ev.candidates[0].content && ev.candidates[0].content.parts;
+      if (parts) {
+        for (const p of parts) {
+          if (p && p.text) { full += p.text; if (onText) onText(full); }
+        }
+      }
+    }
+  }
+  return full;
+}
+
+/* ---- プロバイダで振り分け ---- */
+function streamAI(prompt, onText) {
+  return currentProvider() === "gemini"
+    ? streamGemini(prompt, onText)
+    : streamClaude(prompt, onText);
+}
+
 /* ---- ステータス表示（数秒で自動クリア） ---- */
 let aiStatusTimer = null;
 function setAiStatus(msg) {
@@ -947,15 +1029,15 @@ async function aiRunDirect() {
   setAiStatus("AIに問い合わせ中…");
 
   try {
-    const full = await streamClaude(prompt, (t) => { textEl.textContent = t; });
+    const full = await streamAI(prompt, (t) => { textEl.textContent = t; });
     const orderIds = parseOrder(full, ids);
     if (orderIds) {
-      applyAiOrder(orderIds, full, state.settings.aiModel || "claude-opus-4-8");
+      applyAiOrder(orderIds, full, currentModel());
       setAiStatus("AI提案順に並べ替えました。優先度タブで確認できます。");
     } else {
       state.aiSuggestion = {
         orderIds: [], text: full, createdAt: Date.now(),
-        model: state.settings.aiModel || "", signature: tasksSignature(),
+        model: currentModel(), signature: tasksSignature(),
       };
       save();
       renderAll();
@@ -973,10 +1055,29 @@ function renderAi() {
   const keyStatusEl = document.getElementById("ai-key-status");
   if (!keyStatusEl) return; // AIビュー未挿入時の保険
 
-  const hasKey = !!getApiKey();
+  const provider = currentProvider();
+  const providerSel = document.getElementById("ai-provider");
+  if (providerSel) providerSel.value = provider;
+
+  // モデル候補をプロバイダに応じて再構築
+  const modelSel = document.getElementById("ai-model");
+  modelSel.innerHTML = MODEL_OPTIONS[provider]
+    .map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`)
+    .join("");
+  modelSel.value = currentModel();
+
+  // APIキー欄（プロバイダ別）
+  const hasKey = !!getApiKey(provider);
   keyStatusEl.textContent = hasKey ? "設定済み" : "未設定";
   document.getElementById("ai-run").disabled = !hasKey;
-  document.getElementById("ai-model").value = state.settings.aiModel || "claude-opus-4-8";
+  const keyInput = document.getElementById("ai-key");
+  keyInput.placeholder = provider === "gemini" ? "AIza..." : "sk-ant-...";
+  const hintEl = document.getElementById("ai-key-hint");
+  if (hintEl) {
+    hintEl.innerHTML = provider === "gemini"
+      ? 'キーは <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> で発行（無料枠あり・前払い不要）'
+      : 'キーは <a href="https://console.anthropic.com" target="_blank" rel="noopener">Anthropic Console</a> で発行（要チャージ）';
+  }
 
   const { prompt } = buildAiPrompt();
   document.getElementById("ai-prompt").value = prompt;
