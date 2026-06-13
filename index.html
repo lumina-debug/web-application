@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>段取り（Dandori） — やりたいことを、やるべき順に。</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-logo">段取り</span>
+      <span class="brand-tagline">やりたいことを、やるべき順に。</span>
+    </div>
+    <form id="quick-capture" class="quick-capture" autocomplete="off">
+      <input id="quick-input" type="text" placeholder="思いついたことをサッとメモ…（Enterで追加）" aria-label="クイックメモ" />
+      <button type="submit" class="btn btn-primary">メモ</button>
+    </form>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" data-tab="priority" role="tab">優先度</button>
+    <button class="tab" data-tab="goals" role="tab">やりたいこと</button>
+    <button class="tab" data-tab="memos" role="tab">メモ <span id="memo-count" class="badge"></span></button>
+    <button class="tab" data-tab="done" role="tab">完了</button>
+  </nav>
+
+  <main class="content">
+    <!-- 優先度ビュー -->
+    <section id="view-priority" class="view is-active">
+      <div class="view-toolbar">
+        <button id="add-task-btn" class="btn btn-primary">＋ タスクを追加</button>
+        <div class="filter-group">
+          <label for="goal-filter">目標で絞り込み</label>
+          <select id="goal-filter"></select>
+        </div>
+      </div>
+
+      <div class="weight-control">
+        <span class="weight-label">締切重視</span>
+        <input id="weight-slider" type="range" min="0" max="100" value="50" />
+        <span class="weight-label">手軽さ重視</span>
+        <span id="weight-readout" class="weight-readout"></span>
+      </div>
+
+      <div id="priority-list" class="task-list"></div>
+    </section>
+
+    <!-- やりたいことビュー -->
+    <section id="view-goals" class="view">
+      <div class="view-toolbar">
+        <button id="add-goal-btn" class="btn btn-primary">＋ 目標を追加</button>
+      </div>
+      <div id="goals-list" class="goals-list"></div>
+    </section>
+
+    <!-- メモビュー -->
+    <section id="view-memos" class="view">
+      <p class="view-hint">思いついたことをひとまずここへ。あとでタスクや目標に変換できます。</p>
+      <div id="memos-list" class="memos-list"></div>
+    </section>
+
+    <!-- 完了ビュー -->
+    <section id="view-done" class="view">
+      <div class="view-toolbar">
+        <span id="done-summary" class="done-summary"></span>
+      </div>
+      <div id="done-list" class="task-list"></div>
+    </section>
+  </main>
+
+  <!-- モーダル -->
+  <div id="modal-overlay" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h2 id="modal-title">タスク</h2>
+        <button id="modal-close" class="icon-btn" aria-label="閉じる">×</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <button id="load-sample" class="link-btn">サンプルデータを入れる</button>
+    <button id="clear-all" class="link-btn danger">全データを消去</button>
+    <span class="footer-note">データはこのブラウザ内（localStorage）にのみ保存されます。</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
