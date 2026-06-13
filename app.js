@@ -656,6 +656,7 @@ function init() {
 
   // 追加ボタン
   document.getElementById("add-task-btn").addEventListener("click", () => openTaskModal(null, null));
+  document.getElementById("bulk-task-btn").addEventListener("click", openBulkModal);
   document.getElementById("add-goal-btn").addEventListener("click", () => openGoalModal(null));
 
   // 重みスライダー
@@ -1096,6 +1097,197 @@ function renderAi() {
   } else {
     box.hidden = true;
   }
+}
+
+/* =========================================================
+ * まとめて入力：自由記述 → AIでタスク化 → 一括登録
+ * ======================================================= */
+function buildBulkPrompt(text) {
+  const today = todayStr();
+  return `あなたは優秀なアシスタントです。次のメモ（やること・目標）を、管理しやすいタスクに分解・整理してください。
+今日の日付は ${today} です。
+
+【ルール】
+- 大きすぎる項目は実行できる単位に分解する
+- 各タスクに作業見積（分）を概算で付ける
+- 締切が読み取れるものは設定。読み取れない場合は、緊急度と分量から今日(${today})以降の日付に振り分ける（1日に詰め込みすぎない／目安は1日合計3〜4時間まで）
+- 関連するタスクは同じ「目標」名でグループ化する（なければ null）
+
+【入力メモ】
+${text}
+
+【出力】
+次の形式のJSON配列だけを出力してください。前後に説明文やコードフェンスは付けないでください。
+[
+  {"title":"タスク名","effort":30,"deadline":"YYYY-MM-DD または null","goal":"目標名 または null","note":"補足 または null"}
+]
+- effort は分単位の整数（不明なら null）
+- deadline は YYYY-MM-DD 形式（不明なら null）
+- すべての項目を漏れなく含める`;
+}
+
+function extractJsonArray(text) {
+  if (!text) return null;
+  const s = String(text).replace(/```(?:json)?/gi, "");
+  const start = s.indexOf("[");
+  const end = s.lastIndexOf("]");
+  if (start === -1 || end === -1 || end <= start) return null;
+  try {
+    const arr = JSON.parse(s.slice(start, end + 1));
+    return Array.isArray(arr) ? arr : null;
+  } catch (e) { return null; }
+}
+
+function normalizeParsedTasks(arr) {
+  const out = [];
+  arr.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const title = (item.title || item.name || "").toString().trim();
+    if (!title) return;
+
+    let effort = item.effort;
+    if (typeof effort === "string") effort = parseInt(effort, 10);
+    effort = (typeof effort === "number" && !isNaN(effort) && effort > 0) ? Math.round(effort) : null;
+
+    let deadline = (item.deadline == null ? "" : String(item.deadline)).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(deadline)) deadline = null;
+
+    let goal = item.goal == null ? "" : String(item.goal).trim();
+    if (!goal || goal.toLowerCase() === "null") goal = null;
+
+    let note = item.note == null ? "" : String(item.note).trim();
+    if (note.toLowerCase() === "null") note = "";
+
+    out.push({ title, effort, deadline, goal, note });
+  });
+  return out;
+}
+
+function findOrCreateGoal(name, cache) {
+  const key = name.trim().toLowerCase();
+  if (cache[key]) return cache[key];
+  let g = state.goals.find((x) => x.title.trim().toLowerCase() === key);
+  if (!g) {
+    g = { id: uid(), title: name.trim(), desc: "", emoji: "🎯", createdAt: Date.now() };
+    state.goals.push(g);
+  }
+  cache[key] = g.id;
+  return g.id;
+}
+
+function openBulkModal() {
+  modalTitle.textContent = "まとめて入力（AIでタスク化）";
+  modalBody.innerHTML = `
+    <p class="ai-sub">やること・目標を箇条書きや文章で自由に書いてください。AIがタスク（見積・締切・目標）に整理し、日付に振り分けます。</p>
+    <div class="field">
+      <textarea id="bulk-input" rows="7" placeholder="例）来週の役員会の準備一式。競合調査、企画書ドラフト、スライド作成、関係者へ日程連絡。経費精算も今週中。"></textarea>
+    </div>
+    <div class="bulk-actions">
+      <button type="button" class="btn btn-primary" id="bulk-run">⚡ AIでタスク化</button>
+      <button type="button" class="btn btn-ghost" id="bulk-copy">📋 プロンプトをコピー</button>
+      <span id="bulk-status" class="ai-status"></span>
+    </div>
+    <details class="ai-block">
+      <summary>AIの回答（JSON）を貼り付けて解析（コピペ方式）</summary>
+      <textarea id="bulk-paste" class="ai-paste" rows="5" placeholder="AIの回答をここに貼り付け…"></textarea>
+      <button type="button" class="btn btn-ghost" id="bulk-parse">解析</button>
+    </details>
+    <div id="bulk-preview" class="bulk-preview"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="bulk-cancel">閉じる</button>
+      <button type="button" class="btn btn-primary" id="bulk-add" disabled>選択したタスクを追加</button>
+    </div>`;
+
+  let parsed = [];
+
+  function setBulkStatus(m) {
+    const e = document.getElementById("bulk-status");
+    if (e) e.textContent = m;
+  }
+
+  function showPreview() {
+    const box = document.getElementById("bulk-preview");
+    const addBtn = document.getElementById("bulk-add");
+    if (!parsed.length) { box.innerHTML = ""; addBtn.disabled = true; return; }
+    box.innerHTML = `<div class="bulk-preview-head">${parsed.length}件のタスク（チェックしたものを追加）</div>` +
+      parsed.map((t, i) => {
+        const chips = [];
+        if (t.goal) chips.push(`<span class="chip goal">🎯 ${esc(t.goal)}</span>`);
+        chips.push(`<span class="chip">🗓 ${esc(t.deadline ? deadlineLabel(t.deadline).text : "期限なし")}</span>`);
+        chips.push(`<span class="chip">⏱ ${esc(effortLabel(t.effort))}</span>`);
+        return `<label class="bulk-row"><input type="checkbox" class="bulk-chk" data-i="${i}" checked><div class="bulk-row-main"><div class="bulk-row-title">${esc(t.title)}</div><div class="task-meta">${chips.join("")}</div></div></label>`;
+      }).join("");
+    addBtn.disabled = false;
+  }
+
+  function ingest(text) {
+    const arr = extractJsonArray(text);
+    if (!arr) { setBulkStatus("JSONを読み取れませんでした。出力形式をご確認ください。"); return; }
+    parsed = normalizeParsedTasks(arr);
+    if (!parsed.length) { setBulkStatus("有効なタスクが見つかりませんでした。"); return; }
+    setBulkStatus(`${parsed.length}件を読み取りました。内容を確認して追加してください。`);
+    showPreview();
+  }
+
+  document.getElementById("bulk-run").addEventListener("click", async () => {
+    const text = document.getElementById("bulk-input").value.trim();
+    if (!text) { setBulkStatus("やること・目標を入力してください。"); return; }
+    if (!getApiKey()) { setBulkStatus("APIキーが未設定です。『プロンプトをコピー』で手動でも作れます（設定はAI提案タブから）。"); return; }
+    const btn = document.getElementById("bulk-run");
+    btn.disabled = true;
+    setBulkStatus("AIでタスク化中…");
+    try {
+      const full = await streamAI(buildBulkPrompt(text), () => {});
+      ingest(full);
+    } catch (e) {
+      setBulkStatus("エラー: " + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById("bulk-copy").addEventListener("click", async () => {
+    const text = document.getElementById("bulk-input").value.trim();
+    if (!text) { setBulkStatus("先にやること・目標を入力してください。"); return; }
+    try {
+      await navigator.clipboard.writeText(buildBulkPrompt(text));
+      setBulkStatus("プロンプトをコピーしました。AIに貼り付け、回答を下の欄に貼って『解析』を押してください。");
+    } catch (e) {
+      setBulkStatus("自動コピー不可。プロンプト全文は手動でコピーしてください。");
+    }
+  });
+
+  document.getElementById("bulk-parse").addEventListener("click", () => {
+    const text = document.getElementById("bulk-paste").value.trim();
+    if (!text) { setBulkStatus("AIの回答を貼り付けてください。"); return; }
+    ingest(text);
+  });
+
+  document.getElementById("bulk-cancel").addEventListener("click", closeModal);
+
+  document.getElementById("bulk-add").addEventListener("click", () => {
+    const checks = Array.from(document.querySelectorAll("#bulk-preview .bulk-chk:checked")).map((c) => Number(c.dataset.i));
+    if (!checks.length) { setBulkStatus("追加するタスクを選んでください。"); return; }
+    const goalCache = {};
+    let added = 0;
+    checks.forEach((i) => {
+      const t = parsed[i];
+      if (!t) return;
+      const goalId = t.goal ? findOrCreateGoal(t.goal, goalCache) : null;
+      state.tasks.push({
+        id: uid(), goalId, title: t.title, deadline: t.deadline, effort: t.effort,
+        status: "todo", note: t.note || "", createdAt: Date.now(), completedAt: null,
+      });
+      added++;
+    });
+    save();
+    renderAll();
+    closeModal();
+    switchTab("priority");
+  });
+
+  openModal();
+  document.getElementById("bulk-input").focus();
 }
 
 /* ---------- Sample data ---------- */

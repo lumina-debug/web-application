@@ -392,6 +392,20 @@ body {
 }
 .ai-banner .link-btn { color: var(--accent); margin-left: auto; }
 
+/* ===== まとめて入力 ===== */
+.bulk-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.bulk-preview { margin-top: 4px; }
+.bulk-preview-head { font-size: 13px; color: var(--text-soft); margin: 10px 0 8px; font-weight: 600; }
+.bulk-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  margin-bottom: 6px; cursor: pointer; background: var(--surface);
+}
+.bulk-row:hover { border-color: var(--accent); }
+.bulk-row input { margin-top: 3px; flex-shrink: 0; }
+.bulk-row-main { flex: 1; min-width: 0; }
+.bulk-row-title { font-weight: 600; font-size: 14px; word-break: break-word; }
+
 /* ===== Responsive ===== */
 @media (max-width: 560px) {
   .brand-tagline { display: none; }
