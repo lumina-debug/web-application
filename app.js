@@ -352,7 +352,7 @@ const EFFORT_PRESETS = [
   { label: "2時間", v: 120 }, { label: "半日", v: 240 }, { label: "1日", v: 480 },
 ];
 
-function openTaskModal(taskId, presetGoalId) {
+function openTaskModal(taskId, presetGoalId, prefill) {
   const task = taskId ? state.tasks.find((t) => t.id === taskId) : null;
   modalTitle.textContent = task ? "タスクを編集" : "タスクを追加";
 
@@ -362,9 +362,10 @@ function openTaskModal(taskId, presetGoalId) {
     .join("");
 
   modalBody.innerHTML = `
+    <form id="task-form">
     <div class="field">
       <label for="f-title">タスク名 *</label>
-      <input type="text" id="f-title" value="${esc(task ? task.title : "")}" placeholder="例）企画書をレビューする" />
+      <input type="text" id="f-title" value="${esc(task ? task.title : (prefill && prefill.title ? prefill.title : ""))}" placeholder="例）企画書をレビューする" />
     </div>
     <div class="field">
       <label for="f-goal">紐づける目標（やりたいこと）</label>
@@ -402,10 +403,11 @@ function openTaskModal(taskId, presetGoalId) {
       <textarea id="f-note" placeholder="補足があれば">${esc(task ? task.note || "" : "")}</textarea>
     </div>
     <div class="modal-actions">
-      ${task ? `<button class="link-btn delete-btn" id="f-delete">削除</button>` : ""}
-      <button class="btn btn-ghost" id="f-cancel">キャンセル</button>
-      <button class="btn btn-primary" id="f-save">保存</button>
-    </div>`;
+      ${task ? `<button type="button" class="link-btn delete-btn" id="f-delete">削除</button>` : ""}
+      <button type="button" class="btn btn-ghost" id="f-cancel">キャンセル</button>
+      <button type="submit" class="btn btn-primary" id="f-save">保存</button>
+    </div>
+    </form>`;
 
   // 見積プリセット
   const effortInput = document.getElementById("f-effort");
@@ -431,14 +433,14 @@ function openTaskModal(taskId, presetGoalId) {
   });
 
   document.getElementById("f-cancel").addEventListener("click", closeModal);
-  document.getElementById("f-save").addEventListener("click", () => saveTask(taskId));
+  document.getElementById("task-form").addEventListener("submit", (e) => { e.preventDefault(); saveTask(taskId, prefill); });
   if (task) document.getElementById("f-delete").addEventListener("click", () => deleteTask(taskId));
 
   openModal();
   document.getElementById("f-title").focus();
 }
 
-function saveTask(taskId) {
+function saveTask(taskId, prefill) {
   const title = document.getElementById("f-title").value.trim();
   if (!title) {
     document.getElementById("f-title").focus();
@@ -464,6 +466,10 @@ function saveTask(taskId) {
       completedAt: status === "done" ? Date.now() : null,
     });
   }
+  // メモから変換した場合は、保存できたタイミングで元メモを削除
+  if (prefill && prefill.memoId) {
+    state.memos = state.memos.filter((x) => x.id !== prefill.memoId);
+  }
   save();
   renderAll();
   closeModal();
@@ -484,6 +490,7 @@ function openGoalModal(goalId) {
   modalTitle.textContent = goal ? "目標を編集" : "目標を追加";
 
   modalBody.innerHTML = `
+    <form id="goal-form">
     <div class="field">
       <label for="g-title">やりたいこと（目標）*</label>
       <input type="text" id="g-title" value="${esc(goal ? goal.title : "")}" placeholder="例）新サービスの企画を通す" />
@@ -499,10 +506,11 @@ function openGoalModal(goalId) {
       <textarea id="g-desc" placeholder="この目標のゴールやメモ">${esc(goal ? goal.desc || "" : "")}</textarea>
     </div>
     <div class="modal-actions">
-      ${goal ? `<button class="link-btn delete-btn" id="g-delete">削除</button>` : ""}
-      <button class="btn btn-ghost" id="g-cancel">キャンセル</button>
-      <button class="btn btn-primary" id="g-save">保存</button>
-    </div>`;
+      ${goal ? `<button type="button" class="link-btn delete-btn" id="g-delete">削除</button>` : ""}
+      <button type="button" class="btn btn-ghost" id="g-cancel">キャンセル</button>
+      <button type="submit" class="btn btn-primary" id="g-save">保存</button>
+    </div>
+    </form>`;
 
   let selectedEmoji = goal ? goal.emoji || "🎯" : "🎯";
   document.querySelectorAll("#emoji-presets .preset").forEach((btn) => {
@@ -513,7 +521,8 @@ function openGoalModal(goalId) {
   });
 
   document.getElementById("g-cancel").addEventListener("click", closeModal);
-  document.getElementById("g-save").addEventListener("click", () => {
+  document.getElementById("goal-form").addEventListener("submit", (e) => {
+    e.preventDefault();
     const title = document.getElementById("g-title").value.trim();
     if (!title) { document.getElementById("g-title").focus(); return; }
     const desc = document.getElementById("g-desc").value.trim();
@@ -565,13 +574,8 @@ function toggleTask(taskId) {
 function memoToTask(memoId) {
   const m = state.memos.find((x) => x.id === memoId);
   if (!m) return;
-  // メモを下書きにタスク作成モーダルを開く
-  state.memos = state.memos.filter((x) => x.id !== memoId);
-  save();
-  renderAll();
-  openTaskModal(null, null);
-  document.getElementById("f-title").value = m.text;
-  document.getElementById("f-title").focus();
+  // メモはタスクを「保存」できたときに削除する（キャンセル時は残す）
+  openTaskModal(null, null, { title: m.text, memoId });
 }
 
 function deleteMemo(memoId) {
