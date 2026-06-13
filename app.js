@@ -14,8 +14,16 @@ let state = {
   goals: [],   // { id, title, desc, emoji, createdAt }
   tasks: [],   // { id, goalId, title, deadline, effort, status, note, createdAt, completedAt }
   memos: [],   // { id, text, createdAt }
-  settings: { deadlineWeight: 0.5 }, // 0=手軽さ重視 / 1=締切重視
+  settings: { deadlineWeight: 0.5, aiModel: "claude-opus-4-8", sortMode: "score" },
+  aiSuggestion: null, // { orderIds, text, createdAt, model, signature }
+  aiContext: null,    // { ids: [taskId...] } — 直近に生成したプロンプトのタスク番号対応
 };
+
+const API_KEY_STORAGE = "dandori.apiKey"; // APIキーは本体stateとは別に保存（エクスポートに混ざらないよう）
+
+function defaultSettings() {
+  return { deadlineWeight: 0.5, aiModel: "claude-opus-4-8", sortMode: "score" };
+}
 
 let activeGoalFilter = "all";
 
@@ -29,7 +37,9 @@ function load() {
         goals: parsed.goals || [],
         tasks: parsed.tasks || [],
         memos: parsed.memos || [],
-        settings: Object.assign({ deadlineWeight: 0.5 }, parsed.settings || {}),
+        settings: Object.assign(defaultSettings(), parsed.settings || {}),
+        aiSuggestion: parsed.aiSuggestion || null,
+        aiContext: parsed.aiContext || null,
       };
     }
   } catch (e) {
@@ -89,6 +99,10 @@ function effortLabel(min) {
   if (min < 60) return `${min}分`;
   const h = min / 60;
   return (Number.isInteger(h) ? h : h.toFixed(1)) + "時間";
+}
+
+function statusLabel(s) {
+  return s === "doing" ? "進行中" : s === "done" ? "完了" : "未着手";
 }
 
 function todayStr() {
@@ -165,6 +179,7 @@ function renderAll() {
   renderDone();
   renderMemoCount();
   renderWeightReadout();
+  renderAi();
 }
 
 function renderMemoCount() {
@@ -194,6 +209,9 @@ function renderGoalFilter() {
 
 function renderPriority() {
   const list = document.getElementById("priority-list");
+  const sortSel = document.getElementById("sort-mode");
+  if (sortSel) sortSel.value = state.settings.sortMode || "score";
+
   let tasks = activeTasks();
 
   if (activeGoalFilter === "none") {
@@ -207,11 +225,33 @@ function renderPriority() {
     return;
   }
 
+  const aiMode = state.settings.sortMode === "ai";
+  const order = aiMode && state.aiSuggestion ? state.aiSuggestion.orderIds : null;
+
   const ranked = tasks
     .map((t) => ({ task: t, pri: priorityOf(t) }))
-    .sort((a, b) => b.pri.score - a.pri.score);
+    .sort((a, b) => {
+      if (order && order.length) {
+        const ia = order.indexOf(a.task.id);
+        const ib = order.indexOf(b.task.id);
+        const ra = ia === -1 ? Infinity : ia;
+        const rb = ib === -1 ? Infinity : ib;
+        if (ra !== rb) return ra - rb;
+      }
+      return b.pri.score - a.pri.score;
+    });
 
-  list.innerHTML = ranked.map(({ task, pri }) => taskCardHTML(task, pri)).join("");
+  let banner = "";
+  if (aiMode) {
+    if (order && order.length) {
+      const stale = state.aiSuggestion.signature !== tasksSignature();
+      banner = `<div class="ai-banner">🤖 AI提案順で表示中${stale ? "（タスクが変わりました・再提案がおすすめ）" : ""}<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
+    } else {
+      banner = `<div class="ai-banner">AI提案がまだありません。「AI提案」タブで作成してください。<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
+    }
+  }
+
+  list.innerHTML = banner + ranked.map(({ task, pri }) => taskCardHTML(task, pri)).join("");
 }
 
 function taskCardHTML(task, pri) {
@@ -633,6 +673,43 @@ function init() {
     renderPriority();
   });
 
+  // 並び順（スコア / AI提案）
+  document.getElementById("sort-mode").addEventListener("change", (e) => {
+    state.settings.sortMode = e.target.value;
+    save();
+    renderPriority();
+  });
+
+  // AI提案タブ
+  document.getElementById("ai-copy").addEventListener("click", aiCopyPrompt);
+  document.getElementById("ai-run").addEventListener("click", aiRunDirect);
+  document.getElementById("ai-apply").addEventListener("click", () => {
+    if (!state.aiSuggestion || !state.aiSuggestion.orderIds.length) return;
+    state.settings.sortMode = "ai";
+    save();
+    renderAll();
+    switchTab("priority");
+  });
+  document.getElementById("ai-apply-paste").addEventListener("click", aiApplyPaste);
+  document.getElementById("ai-model").addEventListener("change", (e) => {
+    state.settings.aiModel = e.target.value;
+    save();
+  });
+  document.getElementById("ai-key-save").addEventListener("click", () => {
+    const input = document.getElementById("ai-key");
+    const v = input.value.trim();
+    setApiKey(v);
+    input.value = "";
+    renderAi();
+    setAiStatus(v ? "APIキーを保存しました。" : "キーが空のため削除しました。");
+  });
+  document.getElementById("ai-key-clear").addEventListener("click", () => {
+    setApiKey("");
+    document.getElementById("ai-key").value = "";
+    renderAi();
+    setAiStatus("APIキーを削除しました。");
+  });
+
   // モーダルを閉じる
   document.getElementById("modal-close").addEventListener("click", closeModal);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
@@ -653,6 +730,11 @@ function init() {
       case "add-task-to-goal": openTaskModal(null, id); break;
       case "memo-to-task": memoToTask(id); break;
       case "memo-delete": deleteMemo(id); break;
+      case "sort-score":
+        state.settings.sortMode = "score";
+        save();
+        renderPriority();
+        break;
     }
   });
 
@@ -660,11 +742,259 @@ function init() {
   document.getElementById("load-sample").addEventListener("click", loadSample);
   document.getElementById("clear-all").addEventListener("click", () => {
     if (!confirm("すべてのデータを消去します。よろしいですか？")) return;
-    state = { goals: [], tasks: [], memos: [], settings: { deadlineWeight: 0.5 } };
+    state = { goals: [], tasks: [], memos: [], settings: defaultSettings(), aiSuggestion: null, aiContext: null };
     activeGoalFilter = "all";
     save();
     renderAll();
   });
+}
+
+/* =========================================================
+ * AI提案：プロンプト生成 / 直接依頼（Claude API） / 適用
+ * ======================================================= */
+
+/* ---- APIキー（state とは別保存） ---- */
+function getApiKey() {
+  try { return localStorage.getItem(API_KEY_STORAGE) || ""; } catch (e) { return ""; }
+}
+function setApiKey(k) {
+  try {
+    if (k) localStorage.setItem(API_KEY_STORAGE, k);
+    else localStorage.removeItem(API_KEY_STORAGE);
+  } catch (e) { /* ignore */ }
+}
+
+/* ---- プロンプト生成（タスク番号→id対応も返す） ---- */
+function buildAiPrompt() {
+  const tasks = activeTasks();
+  const ids = tasks.map((t) => t.id);
+  const lines = tasks.map((t, i) => {
+    const goal = t.goalId ? goalById(t.goalId) : null;
+    const dl = deadlineLabel(t.deadline);
+    const pri = priorityOf(t);
+    let line = `${i + 1}. ${t.title}`
+      + ` / 目標:${goal ? goal.title : "なし"}`
+      + ` / 締切:${dl.text}${t.deadline ? `(${t.deadline})` : ""}`
+      + ` / 見積:${effortLabel(t.effort)}`
+      + ` / 状態:${statusLabel(t.status)}`
+      + ` / 現在スコア:${pri.score}`;
+    if (t.note) line += ` / メモ:${t.note}`;
+    return line;
+  });
+
+  const prompt = `あなたは優秀なプロジェクトマネジメントの秘書です。下のタスク一覧を見て、今日から着手すべき順番を提案してください。
+
+【判断の基準】
+- 締切が近い・超過しているものを優先する
+- すぐ終わるタスク（手軽さ）は前倒しで片付けると全体が進む
+- 依存関係（あるタスクが別のタスクの前提になっている）があれば考慮する
+- 同じ目標のタスクはまとめて進めると効率的
+
+【タスク一覧】
+${lines.join("\n")}
+
+【出力の形式】
+1) おすすめ順とその理由を、簡潔な箇条書きで説明してください（各1行程度）。
+2) 最後に、必ず次の1行だけの形式で並び順を出力してください：
+ORDER: 3,1,5,2,4
+※番号は上のタスク番号です。すべての番号を一度ずつ含めてください。`;
+
+  return { prompt, ids };
+}
+
+/* ---- 現在のタスク集合のシグネチャ（提案の鮮度判定用） ---- */
+function tasksSignature() {
+  return activeTasks()
+    .map((t) => [t.id, t.title, t.deadline, t.effort, t.status, t.goalId].join("|"))
+    .sort()
+    .join("¶");
+}
+
+/* ---- AIの回答から「ORDER: ...」を解析して taskId 配列へ ---- */
+function parseOrder(text, ids) {
+  const m = text.match(/ORDER\s*[:：]\s*([0-9０-９,\s、，]+)/i);
+  if (!m) return null;
+  const normalized = m[1].replace(/[０-９]/g, (d) => "０１２３４５６７８９".indexOf(d));
+  const nums = normalized.split(/[,\s、，]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
+  const orderIds = [];
+  nums.forEach((n) => {
+    const id = ids[n - 1];
+    if (id && !orderIds.includes(id)) orderIds.push(id);
+  });
+  return orderIds.length ? orderIds : null;
+}
+
+function applyAiOrder(orderIds, text, model) {
+  state.aiSuggestion = {
+    orderIds,
+    text: text || "",
+    createdAt: Date.now(),
+    model: model || "",
+    signature: tasksSignature(),
+  };
+  state.settings.sortMode = "ai";
+  save();
+  renderAll();
+}
+
+/* ---- Claude API（ブラウザ直叩き・ストリーミング） ---- */
+async function streamClaude(prompt, onText) {
+  const key = getApiKey();
+  const model = state.settings.aiModel || "claude-opus-4-8";
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2000,
+      stream: true,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const e = await res.json(); if (e && e.error && e.error.message) msg = e.error.message; } catch (e) { /* ignore */ }
+    throw new Error(msg);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop(); // 未完の行は次へ持ち越す
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const data = t.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      let ev;
+      try { ev = JSON.parse(data); } catch (e) { continue; }
+      if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta") {
+        full += ev.delta.text;
+        if (onText) onText(full);
+      }
+    }
+  }
+  return full;
+}
+
+/* ---- ステータス表示（数秒で自動クリア） ---- */
+let aiStatusTimer = null;
+function setAiStatus(msg) {
+  const el = document.getElementById("ai-status");
+  if (!el) return;
+  el.textContent = msg;
+  if (aiStatusTimer) clearTimeout(aiStatusTimer);
+  if (msg) aiStatusTimer = setTimeout(() => { el.textContent = ""; }, 6000);
+}
+
+/* ---- アクション ---- */
+async function aiCopyPrompt() {
+  const { prompt, ids } = buildAiPrompt();
+  if (!ids.length) { setAiStatus("対象のタスクがありません。"); return; }
+  state.aiContext = { ids };
+  save();
+  try {
+    await navigator.clipboard.writeText(prompt);
+    setAiStatus("プロンプトをコピーしました。お使いのAIに貼り付けてください。");
+  } catch (e) {
+    const ta = document.getElementById("ai-prompt");
+    const details = ta.closest("details"); if (details) details.open = true;
+    ta.focus(); ta.select();
+    setAiStatus("自動コピー不可。プロンプト欄を選択しました（Ctrl/⌘+Cでコピー）。");
+  }
+}
+
+function aiApplyPaste() {
+  const text = document.getElementById("ai-paste").value.trim();
+  if (!text) { setAiStatus("AIの回答を貼り付けてください。"); return; }
+  if (!state.aiContext || !state.aiContext.ids) { setAiStatus("先に「プロンプトをコピー」を押してください。"); return; }
+  const orderIds = parseOrder(text, state.aiContext.ids);
+  if (!orderIds) { setAiStatus("回答から並び順（ORDER: ...）を読み取れませんでした。"); return; }
+  applyAiOrder(orderIds, text, "コピペ");
+  switchTab("priority");
+  setAiStatus("AIの提案を適用しました。");
+}
+
+async function aiRunDirect() {
+  const key = getApiKey();
+  if (!key) { setAiStatus("先にAPIキーを設定してください。"); return; }
+
+  const { prompt, ids } = buildAiPrompt();
+  if (!ids.length) { setAiStatus("対象のタスクがありません。"); return; }
+  state.aiContext = { ids };
+
+  const runBtn = document.getElementById("ai-run");
+  const box = document.getElementById("ai-result");
+  const textEl = document.getElementById("ai-result-text");
+  runBtn.disabled = true;
+  box.hidden = false;
+  textEl.textContent = "";
+  document.getElementById("ai-meta").textContent = "";
+  document.getElementById("ai-applied").textContent = "";
+  setAiStatus("AIに問い合わせ中…");
+
+  try {
+    const full = await streamClaude(prompt, (t) => { textEl.textContent = t; });
+    const orderIds = parseOrder(full, ids);
+    if (orderIds) {
+      applyAiOrder(orderIds, full, state.settings.aiModel || "claude-opus-4-8");
+      setAiStatus("AI提案順に並べ替えました。優先度タブで確認できます。");
+    } else {
+      state.aiSuggestion = {
+        orderIds: [], text: full, createdAt: Date.now(),
+        model: state.settings.aiModel || "", signature: tasksSignature(),
+      };
+      save();
+      renderAll();
+      setAiStatus("提案は取得しましたが、並び順を自動抽出できませんでした。");
+    }
+  } catch (e) {
+    setAiStatus("エラー: " + e.message);
+  } finally {
+    document.getElementById("ai-run").disabled = !getApiKey();
+  }
+}
+
+/* ---- 描画 ---- */
+function renderAi() {
+  const keyStatusEl = document.getElementById("ai-key-status");
+  if (!keyStatusEl) return; // AIビュー未挿入時の保険
+
+  const hasKey = !!getApiKey();
+  keyStatusEl.textContent = hasKey ? "設定済み" : "未設定";
+  document.getElementById("ai-run").disabled = !hasKey;
+  document.getElementById("ai-model").value = state.settings.aiModel || "claude-opus-4-8";
+
+  const { prompt } = buildAiPrompt();
+  document.getElementById("ai-prompt").value = prompt;
+
+  const box = document.getElementById("ai-result");
+  if (state.aiSuggestion && state.aiSuggestion.text) {
+    box.hidden = false;
+    document.getElementById("ai-result-text").textContent = state.aiSuggestion.text;
+    const stale = state.aiSuggestion.signature !== tasksSignature();
+    const when = new Date(state.aiSuggestion.createdAt).toLocaleString("ja-JP");
+    const model = state.aiSuggestion.model ? state.aiSuggestion.model + " ・ " : "";
+    document.getElementById("ai-meta").textContent = `${model}${when}${stale ? " ・ タスクが変わりました（再提案推奨）" : ""}`;
+    document.getElementById("ai-applied").textContent =
+      (state.settings.sortMode === "ai" && state.aiSuggestion.orderIds.length) ? "適用中" : "";
+    document.getElementById("ai-apply").disabled = !state.aiSuggestion.orderIds.length;
+  } else {
+    box.hidden = true;
+  }
 }
 
 /* ---------- Sample data ---------- */

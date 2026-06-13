@@ -360,6 +360,38 @@ body {
 }
 .footer-note { font-size: 12px; color: var(--text-faint); margin-left: auto; }
 
+/* ===== AI提案 ===== */
+.ai-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.ai-status { font-size: 13px; color: var(--text-soft); }
+.ai-block { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px; box-shadow: var(--shadow); }
+.ai-block > summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--text-soft); }
+.ai-block[open] > summary { margin-bottom: 12px; }
+.ai-sub { font-size: 13px; color: var(--text-soft); margin: 4px 0 10px; }
+.ai-prompt, .ai-paste {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; font-size: 13px; font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  background: var(--surface-2); color: var(--text); resize: vertical; line-height: 1.5;
+}
+.ai-key-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.ai-key-status { font-size: 12px; color: var(--text-faint); }
+.ai-warning { font-size: 12px; color: var(--text-soft); background: var(--pri-mid-bg); border-radius: var(--radius-sm); padding: 10px 12px; margin-top: 12px; }
+.ai-warning code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+
+.ai-result { background: var(--surface); border: 1px solid var(--accent); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; box-shadow: var(--shadow); }
+.ai-result-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.ai-meta { font-size: 12px; color: var(--text-faint); }
+.ai-result-text { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.7; max-height: 360px; overflow-y: auto; }
+.ai-result-actions { display: flex; align-items: center; gap: 12px; margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.ai-applied { font-size: 13px; color: var(--pri-low); font-weight: 600; }
+
+.ai-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: var(--radius-sm); padding: 8px 12px; margin-bottom: 10px; font-size: 13px; font-weight: 600;
+}
+.ai-banner .link-btn { color: var(--accent); margin-left: auto; }
+
 /* ===== Responsive ===== */
 @media (max-width: 560px) {
   .brand-tagline { display: none; }
