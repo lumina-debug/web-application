@@ -865,7 +865,7 @@ function applyAiOrder(orderIds, text, model) {
 }
 
 /* ---- Claude API（ブラウザ直叩き・ストリーミング） ---- */
-async function streamClaude(prompt, onText) {
+async function streamClaude(prompt, onText, maxTokens) {
   const key = getApiKey();
   const model = state.settings.aiModel || "claude-opus-4-8";
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -878,7 +878,7 @@ async function streamClaude(prompt, onText) {
     },
     body: JSON.stringify({
       model,
-      max_tokens: 2000,
+      max_tokens: maxTokens || 2000,
       stream: true,
       messages: [{ role: "user", content: prompt }],
     }),
@@ -918,7 +918,7 @@ async function streamClaude(prompt, onText) {
 }
 
 /* ---- Gemini API（ブラウザ直叩き・ストリーミング） ---- */
-async function streamGemini(prompt, onText) {
+async function streamGemini(prompt, onText, maxTokens) {
   const key = getApiKey("gemini");
   const model = state.settings.geminiModel || "gemini-2.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
@@ -927,7 +927,7 @@ async function streamGemini(prompt, onText) {
     headers: { "content-type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 2000 },
+      generationConfig: { maxOutputTokens: maxTokens || 2000 },
     }),
   });
 
@@ -967,10 +967,10 @@ async function streamGemini(prompt, onText) {
 }
 
 /* ---- プロバイダで振り分け ---- */
-function streamAI(prompt, onText) {
+function streamAI(prompt, onText, maxTokens) {
   return currentProvider() === "gemini"
-    ? streamGemini(prompt, onText)
-    : streamClaude(prompt, onText);
+    ? streamGemini(prompt, onText, maxTokens)
+    : streamClaude(prompt, onText, maxTokens);
 }
 
 /* ---- ステータス表示（数秒で自動クリア） ---- */
@@ -1128,14 +1128,34 @@ ${text}
 
 function extractJsonArray(text) {
   if (!text) return null;
-  const s = String(text).replace(/```(?:json)?/gi, "");
-  const start = s.indexOf("[");
-  const end = s.lastIndexOf("]");
-  if (start === -1 || end === -1 || end <= start) return null;
-  try {
-    const arr = JSON.parse(s.slice(start, end + 1));
-    return Array.isArray(arr) ? arr : null;
-  } catch (e) { return null; }
+  const s = String(text).replace(/```json/gi, "```").split("```").join("").trim();
+
+  // パース（末尾カンマも許容して再挑戦）
+  const relaxed = (str) => {
+    try { return JSON.parse(str); } catch (e) { /* try next */ }
+    try { return JSON.parse(str.replace(/,\s*([\]}])/g, "$1")); } catch (e) { /* give up */ }
+    return undefined;
+  };
+  // 値から配列を取り出す（配列そのもの / {tasks:[...]} / 任意の配列プロパティ）
+  const pickArray = (v) => {
+    if (Array.isArray(v)) return v;
+    if (v && typeof v === "object") {
+      if (Array.isArray(v.tasks)) return v.tasks;
+      for (const k in v) if (Array.isArray(v[k])) return v[k];
+    }
+    return null;
+  };
+
+  let arr = pickArray(relaxed(s));            // 1) 全体をそのまま
+  if (arr) return arr;
+
+  const a = s.indexOf("["), b = s.lastIndexOf("]");   // 2) [ 〜 ]
+  if (a !== -1 && b > a) { arr = pickArray(relaxed(s.slice(a, b + 1))); if (arr) return arr; }
+
+  const c = s.indexOf("{"), d = s.lastIndexOf("}");   // 3) { 〜 }（オブジェクト包み）
+  if (c !== -1 && d > c) { arr = pickArray(relaxed(s.slice(c, d + 1))); if (arr) return arr; }
+
+  return null;
 }
 
 function normalizeParsedTasks(arr) {
@@ -1220,11 +1240,23 @@ function openBulkModal() {
     addBtn.disabled = false;
   }
 
+  function showRaw(text) {
+    const box = document.getElementById("bulk-preview");
+    box.innerHTML = `<div class="bulk-preview-head">AIの生の回答（自動解析できませんでした）</div>`
+      + `<textarea class="ai-paste" rows="6" readonly>${esc(text)}</textarea>`
+      + `<p class="ai-sub">途中で切れている場合はモデルを変える/再試行を、形式が違う場合はこの内容を上の「貼り付けて解析」欄に貼って再解析してください。</p>`;
+    document.getElementById("bulk-add").disabled = true;
+  }
+
   function ingest(text) {
+    if (!text || !text.trim()) {
+      setBulkStatus("AIからの回答が空でした。モデルを変える/出力量を増やすか、コピペ方式をお試しください。");
+      return;
+    }
     const arr = extractJsonArray(text);
-    if (!arr) { setBulkStatus("JSONを読み取れませんでした。出力形式をご確認ください。"); return; }
+    if (!arr) { setBulkStatus("JSONを読み取れませんでした。生の回答を表示します。"); showRaw(text); return; }
     parsed = normalizeParsedTasks(arr);
-    if (!parsed.length) { setBulkStatus("有効なタスクが見つかりませんでした。"); return; }
+    if (!parsed.length) { setBulkStatus("有効なタスクが見つかりませんでした。"); showRaw(text); return; }
     setBulkStatus(`${parsed.length}件を読み取りました。内容を確認して追加してください。`);
     showPreview();
   }
@@ -1237,7 +1269,7 @@ function openBulkModal() {
     btn.disabled = true;
     setBulkStatus("AIでタスク化中…");
     try {
-      const full = await streamAI(buildBulkPrompt(text), () => {});
+      const full = await streamAI(buildBulkPrompt(text), () => {}, 8192);
       ingest(full);
     } catch (e) {
       setBulkStatus("エラー: " + e.message);
