@@ -657,6 +657,7 @@ function init() {
   // 追加ボタン
   document.getElementById("add-task-btn").addEventListener("click", () => openTaskModal(null, null));
   document.getElementById("bulk-task-btn").addEventListener("click", openBulkModal);
+  document.getElementById("ics-task-btn").addEventListener("click", openIcsModal);
   document.getElementById("add-goal-btn").addEventListener("click", () => openGoalModal(null));
 
   // 重みスライダー
@@ -1320,6 +1321,169 @@ function openBulkModal() {
 
   openModal();
   document.getElementById("bulk-input").focus();
+}
+
+/* =========================================================
+ * カレンダー取り込み（.ics / iCalendar）— OAuth不要・端末内で解析
+ * ======================================================= */
+function unescapeICS(v) {
+  return String(v).replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\");
+}
+function localYMD(dt) { return dt.toLocaleDateString("sv-SE"); } // YYYY-MM-DD（ローカル）
+
+// DTSTART/DTEND の値を {dateStr, ms, allDay} に
+function parseICSDate(value, params) {
+  const v = String(value).trim();
+  const m = v.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/);
+  if (!m) return null;
+  const y = m[1], mo = m[2], d = m[3], hh = m[4], mi = m[5], ss = m[6], z = m[7];
+  const dateOnly = /VALUE=DATE/i.test(params || "") || hh === undefined;
+  if (dateOnly) return { dateStr: `${y}-${mo}-${d}`, ms: null, allDay: true };
+  if (z === "Z") {
+    const dt = new Date(Date.UTC(+y, +mo - 1, +d, +hh, +mi, +(ss || 0)));
+    return { dateStr: localYMD(dt), ms: dt.getTime(), allDay: false };
+  }
+  // フローティング/TZID付きは、書かれた壁時計の日付・時刻をそのまま採用
+  const dt = new Date(+y, +mo - 1, +d, +hh, +mi, +(ss || 0));
+  return { dateStr: `${y}-${mo}-${d}`, ms: dt.getTime(), allDay: false };
+}
+// DURATION（PT1H30M 等）を分に
+function parseICSDuration(v) {
+  const m = String(v).trim().match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/i);
+  if (!m) return null;
+  const mins = (parseInt(m[1] || 0, 10) * 1440) + (parseInt(m[2] || 0, 10) * 60) + parseInt(m[3] || 0, 10) + Math.round(parseInt(m[4] || 0, 10) / 60);
+  return mins > 0 ? mins : null;
+}
+function parseICS(text) {
+  // RFC5545 行折り返しの復元（改行+空白/タブは継続行）
+  const unfolded = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n[ \t]/g, "");
+  const lines = unfolded.split("\n");
+  const events = [];
+  let cur = null;
+  for (const line of lines) {
+    if (line === "BEGIN:VEVENT") { cur = {}; continue; }
+    if (line === "END:VEVENT") { if (cur) events.push(cur); cur = null; continue; }
+    if (!cur) continue;
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    const left = line.slice(0, idx);
+    const value = line.slice(idx + 1);
+    const semi = left.indexOf(";");
+    const name = (semi === -1 ? left : left.slice(0, semi)).toUpperCase();
+    const params = semi === -1 ? "" : left.slice(semi + 1);
+    if (name === "SUMMARY") cur.summary = unescapeICS(value);
+    else if (name === "LOCATION") cur.location = unescapeICS(value);
+    else if (name === "DTSTART") cur.start = parseICSDate(value, params);
+    else if (name === "DTEND") cur.end = parseICSDate(value, params);
+    else if (name === "DURATION") cur.duration = parseICSDuration(value);
+    else if (name === "RRULE") cur.rrule = value;
+  }
+  return events;
+}
+function eventToTask(ev) {
+  const title = (ev.summary || "").trim();
+  if (!title || !ev.start) return null;
+  let effort = null;
+  if (!ev.start.allDay) {
+    if (ev.start.ms != null && ev.end && ev.end.ms != null) {
+      const d = Math.round((ev.end.ms - ev.start.ms) / 60000);
+      if (d > 0 && d <= 600) effort = d; // 10時間超は所要時間として不自然なので除外
+    } else if (ev.duration && ev.duration <= 600) {
+      effort = ev.duration;
+    }
+  }
+  const note = ev.location ? ("場所: " + ev.location) : "";
+  return { title, effort, deadline: ev.start.dateStr, goal: null, note };
+}
+
+function openIcsModal() {
+  modalTitle.textContent = "カレンダー取り込み（.ics）";
+  modalBody.innerHTML = `
+    <p class="ai-sub">Googleカレンダー等から書き出した <code>.ics</code> ファイルを選ぶと、予定をタスクとして取り込めます（OAuth不要・端末内で処理）。</p>
+    <div class="field">
+      <input type="file" id="ics-file" accept=".ics,text/calendar" />
+    </div>
+    <label class="ics-opt"><input type="checkbox" id="ics-future" checked> 今日以降の予定だけ取り込む</label>
+    <span id="ics-status" class="ai-status"></span>
+    <div id="ics-preview" class="bulk-preview"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="ics-cancel">閉じる</button>
+      <button type="button" class="btn btn-primary" id="ics-add" disabled>選択した予定を追加</button>
+    </div>`;
+
+  let candidates = [];
+
+  function setIcsStatus(m) { const e = document.getElementById("ics-status"); if (e) e.textContent = m; }
+
+  function render() {
+    const box = document.getElementById("ics-preview");
+    const addBtn = document.getElementById("ics-add");
+    const future = document.getElementById("ics-future").checked;
+    const today = todayStr();
+    const list = candidates.filter((t) => !future || (t.deadline && t.deadline >= today));
+    if (!list.length) {
+      box.innerHTML = candidates.length ? `<div class="bulk-preview-head">条件に合う予定がありません</div>` : "";
+      addBtn.disabled = true;
+      return;
+    }
+    box.innerHTML = `<div class="bulk-preview-head">${list.length}件の予定（チェックしたものを追加）</div>` +
+      list.map((t) => {
+        const i = candidates.indexOf(t);
+        const chips = [`<span class="chip">🗓 ${esc(t.deadline)}</span>`, `<span class="chip">⏱ ${esc(effortLabel(t.effort))}</span>`];
+        if (t.note) chips.push(`<span class="chip">📍</span>`);
+        return `<label class="bulk-row"><input type="checkbox" class="ics-chk" data-i="${i}" checked><div class="bulk-row-main"><div class="bulk-row-title">${esc(t.title)}</div><div class="task-meta">${chips.join("")}</div></div></label>`;
+      }).join("");
+    addBtn.disabled = false;
+  }
+
+  document.getElementById("ics-file").addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setIcsStatus("読み込み中…");
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const events = parseICS(String(reader.result));
+        candidates = events.map(eventToTask).filter(Boolean);
+        if (!candidates.length) {
+          setIcsStatus("予定（VEVENT）が見つかりませんでした。");
+          document.getElementById("ics-preview").innerHTML = "";
+          document.getElementById("ics-add").disabled = true;
+          return;
+        }
+        setIcsStatus(`${candidates.length}件の予定を読み取りました。`);
+        render();
+      } catch (err) {
+        setIcsStatus("読み込みに失敗しました: " + err.message);
+      }
+    };
+    reader.onerror = () => setIcsStatus("ファイルを読めませんでした。");
+    reader.readAsText(file);
+  });
+
+  document.getElementById("ics-future").addEventListener("change", render);
+  document.getElementById("ics-cancel").addEventListener("click", closeModal);
+
+  document.getElementById("ics-add").addEventListener("click", () => {
+    const checks = Array.from(document.querySelectorAll("#ics-preview .ics-chk:checked")).map((c) => Number(c.dataset.i));
+    if (!checks.length) { setIcsStatus("追加する予定を選んでください。"); return; }
+    let added = 0;
+    checks.forEach((i) => {
+      const t = candidates[i];
+      if (!t) return;
+      state.tasks.push({
+        id: uid(), goalId: null, title: t.title, deadline: t.deadline, effort: t.effort,
+        status: "todo", note: t.note || "", createdAt: Date.now(), completedAt: null,
+      });
+      added++;
+    });
+    save();
+    renderAll();
+    closeModal();
+    switchTab("priority");
+  });
+
+  openModal();
 }
 
 /* ---------- Sample data ---------- */

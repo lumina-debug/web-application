@@ -405,6 +405,8 @@ body {
 .bulk-row input { margin-top: 3px; flex-shrink: 0; }
 .bulk-row-main { flex: 1; min-width: 0; }
 .bulk-row-title { font-weight: 600; font-size: 14px; word-break: break-word; }
+.ics-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-soft); margin-bottom: 10px; }
+.ics-opt input { flex-shrink: 0; }
 
 /* ===== Responsive ===== */
 @media (max-width: 560px) {
