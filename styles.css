@@ -236,7 +236,9 @@ body {
 .pri-mid .pri-score { background: var(--pri-mid-bg); color: var(--pri-mid); }
 .pri-low .pri-score { background: var(--pri-low-bg); color: var(--pri-low); }
 .pri-breakdown { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
-.task-edit { font-size: 12px; }
+.task-actions { display: flex; gap: 10px; align-items: center; }
+.task-actions .link-btn { font-size: 12px; }
+.decompose-parent { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 14px; }
 
 /* ===== Goals ===== */
 .goals-list { display: flex; flex-direction: column; gap: 14px; }

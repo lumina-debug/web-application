@@ -277,7 +277,10 @@ function taskCardHTML(task, pri) {
       <div class="task-side">
         <div class="pri-score"><small>優先度</small>${pri.score}</div>
         <div class="pri-breakdown">締切 ${pri.urgency} ／ 手軽さ ${pri.quickness}</div>
-        <button class="link-btn task-edit" data-action="edit">編集</button>
+        <div class="task-actions">
+          <button class="link-btn" data-action="decompose">分解</button>
+          <button class="link-btn task-edit" data-action="edit">編集</button>
+        </div>
       </div>
     </div>`;
 }
@@ -735,6 +738,7 @@ function init() {
     switch (action) {
       case "toggle": toggleTask(id); break;
       case "edit": openTaskModal(id); break;
+      case "decompose": openDecomposeModal(id); break;
       case "edit-goal": openGoalModal(id); break;
       case "add-task-to-goal": openTaskModal(null, id); break;
       case "memo-to-task": memoToTask(id); break;
@@ -1196,6 +1200,25 @@ function findOrCreateGoal(name, cache) {
   return g.id;
 }
 
+// パース結果のタスク群を、チェックボックス付きプレビューに（まとめ入力・分解で共用）
+function previewTasksHTML(parsed, label, chkClass) {
+  return `<div class="bulk-preview-head">${parsed.length}件の${esc(label)}（チェックしたものを追加）</div>` +
+    parsed.map((t, i) => {
+      const chips = [];
+      if (t.goal) chips.push(`<span class="chip goal">🎯 ${esc(t.goal)}</span>`);
+      chips.push(`<span class="chip">🗓 ${esc(t.deadline ? deadlineLabel(t.deadline).text : "期限なし")}</span>`);
+      chips.push(`<span class="chip">⏱ ${esc(effortLabel(t.effort))}</span>`);
+      return `<label class="bulk-row"><input type="checkbox" class="${chkClass}" data-i="${i}" checked><div class="bulk-row-main"><div class="bulk-row-title">${esc(t.title)}</div><div class="task-meta">${chips.join("")}</div></div></label>`;
+    }).join("");
+}
+
+// 解析できなかったときに生の回答を見せる（共用）
+function rawReplyHTML(text) {
+  return `<div class="bulk-preview-head">AIの生の回答（自動解析できませんでした）</div>`
+    + `<textarea class="ai-paste" rows="6" readonly>${esc(text)}</textarea>`
+    + `<p class="ai-sub">途中で切れている場合はモデルを変える/再試行を、形式が違う場合はこの内容を「貼り付けて解析」欄に貼って再解析してください。</p>`;
+}
+
 function openBulkModal() {
   modalTitle.textContent = "まとめて入力（AIでタスク化）";
   modalBody.innerHTML = `
@@ -1230,22 +1253,12 @@ function openBulkModal() {
     const box = document.getElementById("bulk-preview");
     const addBtn = document.getElementById("bulk-add");
     if (!parsed.length) { box.innerHTML = ""; addBtn.disabled = true; return; }
-    box.innerHTML = `<div class="bulk-preview-head">${parsed.length}件のタスク（チェックしたものを追加）</div>` +
-      parsed.map((t, i) => {
-        const chips = [];
-        if (t.goal) chips.push(`<span class="chip goal">🎯 ${esc(t.goal)}</span>`);
-        chips.push(`<span class="chip">🗓 ${esc(t.deadline ? deadlineLabel(t.deadline).text : "期限なし")}</span>`);
-        chips.push(`<span class="chip">⏱ ${esc(effortLabel(t.effort))}</span>`);
-        return `<label class="bulk-row"><input type="checkbox" class="bulk-chk" data-i="${i}" checked><div class="bulk-row-main"><div class="bulk-row-title">${esc(t.title)}</div><div class="task-meta">${chips.join("")}</div></div></label>`;
-      }).join("");
+    box.innerHTML = previewTasksHTML(parsed, "タスク", "bulk-chk");
     addBtn.disabled = false;
   }
 
   function showRaw(text) {
-    const box = document.getElementById("bulk-preview");
-    box.innerHTML = `<div class="bulk-preview-head">AIの生の回答（自動解析できませんでした）</div>`
-      + `<textarea class="ai-paste" rows="6" readonly>${esc(text)}</textarea>`
-      + `<p class="ai-sub">途中で切れている場合はモデルを変える/再試行を、形式が違う場合はこの内容を上の「貼り付けて解析」欄に貼って再解析してください。</p>`;
+    document.getElementById("bulk-preview").innerHTML = rawReplyHTML(text);
     document.getElementById("bulk-add").disabled = true;
   }
 
@@ -1484,6 +1497,159 @@ function openIcsModal() {
   });
 
   openModal();
+}
+
+/* =========================================================
+ * タスクの分解：親タスク＋任意の補足情報 → AIでサブタスク化
+ * ======================================================= */
+function buildDecomposePrompt(task, info, goalName) {
+  const today = todayStr();
+  const dl = task.deadline ? task.deadline : "期限なし";
+  return `あなたは優秀なアシスタントです。次の「親タスク」を、実行できる小さなサブタスクに分解してください。
+今日の日付は ${today} です。
+
+【親タスク】
+- タイトル: ${task.title}
+- 目標: ${goalName || "なし"}
+- 締切: ${dl}
+- 現在の見積: ${effortLabel(task.effort)}
+- メモ: ${task.note || "なし"}
+
+【補足情報】
+${info || "特になし"}
+
+【ルール】
+- 具体的で着手できる単位に分解する（3〜8個を目安に、細かすぎない）
+- 各サブタスクに作業見積（分）を概算で付ける
+- 締切は親タスクの締切(${dl})当日かそれより前に設定する。親に締切が無ければ緊急度から今日以降に配分
+- 目標は親と同じ「${goalName || "（なし）"}」にする（親に目標が無ければ null）
+
+【出力】
+次の形式のJSON配列だけを出力してください（前後に説明文やコードフェンスは不要）:
+[
+  {"title":"サブタスク名","effort":30,"deadline":"YYYY-MM-DD または null","goal":${goalName ? JSON.stringify(goalName) : "null"},"note":"補足 または null"}
+]
+- effort は分単位の整数（不明なら null）
+- deadline は YYYY-MM-DD 形式（不明なら null）`;
+}
+
+function openDecomposeModal(taskId) {
+  const task = state.tasks.find((t) => t.id === taskId);
+  if (!task) return;
+  const goal = task.goalId ? goalById(task.goalId) : null;
+  const goalName = goal ? goal.title : null;
+
+  modalTitle.textContent = "タスクを分解";
+  modalBody.innerHTML = `
+    <div class="decompose-parent">
+      <div class="bulk-row-title">${esc(task.title)}</div>
+      <div class="task-meta">
+        ${goal ? `<span class="chip goal">🎯 ${esc(goal.title)}</span>` : ""}
+        <span class="chip">🗓 ${esc(deadlineLabel(task.deadline).text)}</span>
+        <span class="chip">⏱ ${esc(effortLabel(task.effort))}</span>
+      </div>
+    </div>
+    <div class="field">
+      <label for="dec-info">補足情報（任意）— 制約・前提・成果物の形など、分解の手がかり</label>
+      <textarea id="dec-info" rows="4" placeholder="例）社内データのみ使用。来週の役員会で使うスライド5枚程度。担当は自分ひとり。"></textarea>
+    </div>
+    <div class="bulk-actions">
+      <button type="button" class="btn btn-primary" id="dec-run">⚡ AIで分解</button>
+      <button type="button" class="btn btn-ghost" id="dec-copy">📋 プロンプトをコピー</button>
+      <span id="dec-status" class="ai-status"></span>
+    </div>
+    <details class="ai-block">
+      <summary>AIの回答（JSON）を貼り付けて解析（コピペ方式）</summary>
+      <textarea id="dec-paste" class="ai-paste" rows="5" placeholder="AIの回答をここに貼り付け…"></textarea>
+      <button type="button" class="btn btn-ghost" id="dec-parse">解析</button>
+    </details>
+    <label class="ics-opt"><input type="checkbox" id="dec-complete"> 追加後、元のタスクを完了にする</label>
+    <div id="dec-preview" class="bulk-preview"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="dec-cancel">閉じる</button>
+      <button type="button" class="btn btn-primary" id="dec-add" disabled>選択したサブタスクを追加</button>
+    </div>`;
+
+  let parsed = [];
+  const setDecStatus = (m) => { const e = document.getElementById("dec-status"); if (e) e.textContent = m; };
+  const promptText = () => buildDecomposePrompt(task, document.getElementById("dec-info").value.trim(), goalName);
+
+  function showPreview() {
+    const box = document.getElementById("dec-preview");
+    const addBtn = document.getElementById("dec-add");
+    if (!parsed.length) { box.innerHTML = ""; addBtn.disabled = true; return; }
+    box.innerHTML = previewTasksHTML(parsed, "サブタスク", "dec-chk");
+    addBtn.disabled = false;
+  }
+
+  function ingest(text) {
+    if (!text || !text.trim()) { setDecStatus("AIからの回答が空でした。モデルを変える/出力量を増やすか、コピペ方式をお試しください。"); return; }
+    const arr = extractJsonArray(text);
+    if (!arr) { setDecStatus("JSONを読み取れませんでした。生の回答を表示します。"); document.getElementById("dec-preview").innerHTML = rawReplyHTML(text); document.getElementById("dec-add").disabled = true; return; }
+    parsed = normalizeParsedTasks(arr);
+    if (!parsed.length) { setDecStatus("有効なサブタスクが見つかりませんでした。"); document.getElementById("dec-preview").innerHTML = rawReplyHTML(text); document.getElementById("dec-add").disabled = true; return; }
+    setDecStatus(`${parsed.length}件を読み取りました。確認して追加してください。`);
+    showPreview();
+  }
+
+  document.getElementById("dec-run").addEventListener("click", async () => {
+    if (!getApiKey()) { setDecStatus("APIキーが未設定です。『プロンプトをコピー』で手動でも作れます（設定はAI提案タブから）。"); return; }
+    const btn = document.getElementById("dec-run");
+    btn.disabled = true;
+    setDecStatus("AIで分解中…");
+    try {
+      const full = await streamAI(promptText(), () => {}, 8192);
+      ingest(full);
+    } catch (e) {
+      setDecStatus("エラー: " + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById("dec-copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(promptText());
+      setDecStatus("プロンプトをコピーしました。AIに貼り付け、回答を下の欄に貼って『解析』を押してください。");
+    } catch (e) {
+      setDecStatus("自動コピー不可。プロンプトは手動でコピーしてください。");
+    }
+  });
+
+  document.getElementById("dec-parse").addEventListener("click", () => {
+    const text = document.getElementById("dec-paste").value.trim();
+    if (!text) { setDecStatus("AIの回答を貼り付けてください。"); return; }
+    ingest(text);
+  });
+
+  document.getElementById("dec-cancel").addEventListener("click", closeModal);
+
+  document.getElementById("dec-add").addEventListener("click", () => {
+    const checks = Array.from(document.querySelectorAll("#dec-preview .dec-chk:checked")).map((c) => Number(c.dataset.i));
+    if (!checks.length) { setDecStatus("追加するサブタスクを選んでください。"); return; }
+    const goalCache = {};
+    checks.forEach((i) => {
+      const t = parsed[i];
+      if (!t) return;
+      const gName = t.goal || goalName; // 親の目標を継承
+      const goalId = gName ? findOrCreateGoal(gName, goalCache) : null;
+      state.tasks.push({
+        id: uid(), goalId, title: t.title, deadline: t.deadline, effort: t.effort,
+        status: "todo", note: t.note || "", createdAt: Date.now(), completedAt: null,
+      });
+    });
+    if (document.getElementById("dec-complete").checked) {
+      task.status = "done";
+      task.completedAt = Date.now();
+    }
+    save();
+    renderAll();
+    closeModal();
+    switchTab("priority");
+  });
+
+  openModal();
+  document.getElementById("dec-info").focus();
 }
 
 /* ---------- Sample data ---------- */
