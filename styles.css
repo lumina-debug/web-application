@@ -238,6 +238,8 @@ body {
 .pri-breakdown { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
 .task-actions { display: flex; gap: 10px; align-items: center; }
 .task-actions .link-btn { font-size: 12px; }
+.move-btn { font-size: 15px; line-height: 1; text-decoration: none; color: var(--text-faint); padding: 0 2px; }
+.move-btn:hover { color: var(--accent); }
 .decompose-parent { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 14px; }
 
 /* ===== Goals ===== */

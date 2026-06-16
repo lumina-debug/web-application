@@ -17,6 +17,7 @@ let state = {
   settings: { deadlineWeight: 0.5, aiProvider: "claude", aiModel: "claude-opus-4-8", geminiModel: "gemini-2.5-flash", sortMode: "score" },
   aiSuggestion: null, // { orderIds, text, createdAt, model, signature }
   aiContext: null,    // { ids: [taskId...] } — 直近に生成したプロンプトのタスク番号対応
+  manualOrder: [],    // 手動並び替えの順序（taskId配列）
 };
 
 // APIキーはプロバイダ別に、本体stateとは別保存（エクスポートに混ざらないよう）
@@ -41,6 +42,7 @@ function load() {
         settings: Object.assign(defaultSettings(), parsed.settings || {}),
         aiSuggestion: parsed.aiSuggestion || null,
         aiContext: parsed.aiContext || null,
+        manualOrder: parsed.manualOrder || [],
       };
     }
   } catch (e) {
@@ -208,48 +210,67 @@ function renderGoalFilter() {
   }
 }
 
-function renderPriority() {
-  const list = document.getElementById("priority-list");
-  const sortSel = document.getElementById("sort-mode");
-  if (sortSel) sortSel.value = state.settings.sortMode || "score";
-
-  let tasks = activeTasks();
-
-  if (activeGoalFilter === "none") {
-    tasks = tasks.filter((t) => !t.goalId);
-  } else if (activeGoalFilter !== "all") {
-    tasks = tasks.filter((t) => t.goalId === activeGoalFilter);
-  }
-
-  if (tasks.length === 0) {
-    list.innerHTML = emptyState("🗂️", "タスクがありません", "「＋ タスクを追加」から、やるべきことを登録しましょう。");
-    return;
-  }
-
-  const aiMode = state.settings.sortMode === "ai";
-  const order = aiMode && state.aiSuggestion ? state.aiSuggestion.orderIds : null;
-
-  const ranked = tasks
+// orderIds の順に並べ、未掲載はスコア順で末尾へ（スコア/AI/手動で共用）
+function rankActive(tasks, orderIds) {
+  return tasks
     .map((t) => ({ task: t, pri: priorityOf(t) }))
     .sort((a, b) => {
-      if (order && order.length) {
-        const ia = order.indexOf(a.task.id);
-        const ib = order.indexOf(b.task.id);
+      if (orderIds && orderIds.length) {
+        const ia = orderIds.indexOf(a.task.id);
+        const ib = orderIds.indexOf(b.task.id);
         const ra = ia === -1 ? Infinity : ia;
         const rb = ib === -1 ? Infinity : ib;
         if (ra !== rb) return ra - rb;
       }
       return b.pri.score - a.pri.score;
     });
+}
+
+function orderForMode(mode) {
+  if (mode === "manual") return state.manualOrder || [];
+  if (mode === "ai" && state.aiSuggestion) return state.aiSuggestion.orderIds || [];
+  return null; // score
+}
+
+// 現在のモードでの全アクティブタスクの並び（手動順の土台に使う）
+function orderedActiveIds(mode) {
+  return rankActive(activeTasks(), orderForMode(mode)).map((x) => x.task.id);
+}
+
+// 目標フィルタを適用したアクティブタスク
+function filteredActiveTasks() {
+  let tasks = activeTasks();
+  if (activeGoalFilter === "none") tasks = tasks.filter((t) => !t.goalId);
+  else if (activeGoalFilter !== "all") tasks = tasks.filter((t) => t.goalId === activeGoalFilter);
+  return tasks;
+}
+
+function renderPriority() {
+  const list = document.getElementById("priority-list");
+  const mode = state.settings.sortMode || "score";
+  const sortSel = document.getElementById("sort-mode");
+  if (sortSel) sortSel.value = mode;
+
+  const tasks = filteredActiveTasks();
+  if (tasks.length === 0) {
+    list.innerHTML = emptyState("🗂️", "タスクがありません", "「＋ タスクを追加」から、やるべきことを登録しましょう。");
+    return;
+  }
+
+  const ranked = rankActive(tasks, orderForMode(mode));
 
   let banner = "";
-  if (aiMode) {
-    if (order && order.length) {
+  if (mode === "ai") {
+    if (state.aiSuggestion && state.aiSuggestion.orderIds.length) {
       const stale = state.aiSuggestion.signature !== tasksSignature();
       banner = `<div class="ai-banner">🤖 AI提案順で表示中${stale ? "（タスクが変わりました・再提案がおすすめ）" : ""}<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
     } else {
       banner = `<div class="ai-banner">AI提案がまだありません。「AI提案」タブで作成してください。<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
     }
+  } else if (mode === "manual") {
+    const aiBtn = (state.aiSuggestion && state.aiSuggestion.orderIds.length)
+      ? `<button class="link-btn" data-action="sort-ai">AI提案順に戻す</button>` : "";
+    banner = `<div class="ai-banner">✋ 手動並び替え中（各カードの ↑↓ で入れ替え）${aiBtn}<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
   }
 
   list.innerHTML = banner + ranked.map(({ task, pri }) => taskCardHTML(task, pri)).join("");
@@ -278,6 +299,8 @@ function taskCardHTML(task, pri) {
         <div class="pri-score"><small>優先度</small>${pri.score}</div>
         <div class="pri-breakdown">締切 ${pri.urgency} ／ 手軽さ ${pri.quickness}</div>
         <div class="task-actions">
+          <button class="link-btn move-btn" data-action="move-up" aria-label="上へ移動">↑</button>
+          <button class="link-btn move-btn" data-action="move-down" aria-label="下へ移動">↓</button>
           <button class="link-btn" data-action="decompose">分解</button>
           <button class="link-btn task-edit" data-action="edit">編集</button>
         </div>
@@ -615,6 +638,35 @@ function toggleTask(taskId) {
   renderAll();
 }
 
+// 手動で1つ上/下へ（dir: -1=上, +1=下）。初回は現在の並びを土台に手動モードへ
+function moveTask(id, dir) {
+  if (state.settings.sortMode !== "manual" || !state.manualOrder || !state.manualOrder.length) {
+    state.manualOrder = orderedActiveIds(state.settings.sortMode);
+    state.settings.sortMode = "manual";
+  } else {
+    // 新規タスクを末尾に補完し、完了/削除済みを除去
+    const present = new Set(state.manualOrder);
+    activeTasks().forEach((t) => { if (!present.has(t.id)) state.manualOrder.push(t.id); });
+    const active = new Set(activeTasks().map((t) => t.id));
+    state.manualOrder = state.manualOrder.filter((tid) => active.has(tid));
+  }
+
+  // 表示中（フィルタ適用）の並びで隣を特定 → グローバルな手動順で位置を入れ替え
+  const displayed = rankActive(filteredActiveTasks(), state.manualOrder).map((x) => x.task.id);
+  const pos = displayed.indexOf(id);
+  if (pos === -1) return;
+  const neighbor = displayed[pos + dir];
+  if (neighbor === undefined) return; // 端
+
+  const a = state.manualOrder.indexOf(id);
+  const b = state.manualOrder.indexOf(neighbor);
+  if (a === -1 || b === -1) return;
+  state.manualOrder[a] = neighbor;
+  state.manualOrder[b] = id;
+  save();
+  renderPriority();
+}
+
 function memoToTask(memoId) {
   const m = state.memos.find((x) => x.id === memoId);
   if (!m) return;
@@ -679,9 +731,13 @@ function init() {
     renderPriority();
   });
 
-  // 並び順（スコア / AI提案）
+  // 並び順（スコア / AI提案 / 手動）
   document.getElementById("sort-mode").addEventListener("change", (e) => {
-    state.settings.sortMode = e.target.value;
+    const v = e.target.value;
+    if (v === "manual" && (!state.manualOrder || !state.manualOrder.length)) {
+      state.manualOrder = orderedActiveIds(state.settings.sortMode); // 現在の並びを土台に
+    }
+    state.settings.sortMode = v;
     save();
     renderPriority();
   });
@@ -739,6 +795,13 @@ function init() {
       case "toggle": toggleTask(id); break;
       case "edit": openTaskModal(id); break;
       case "decompose": openDecomposeModal(id); break;
+      case "move-up": moveTask(id, -1); break;
+      case "move-down": moveTask(id, 1); break;
+      case "sort-ai":
+        state.settings.sortMode = "ai";
+        save();
+        renderPriority();
+        break;
       case "edit-goal": openGoalModal(id); break;
       case "add-task-to-goal": openTaskModal(null, id); break;
       case "memo-to-task": memoToTask(id); break;
@@ -755,7 +818,7 @@ function init() {
   document.getElementById("load-sample").addEventListener("click", loadSample);
   document.getElementById("clear-all").addEventListener("click", () => {
     if (!confirm("すべてのデータを消去します。よろしいですか？")) return;
-    state = { goals: [], tasks: [], memos: [], settings: defaultSettings(), aiSuggestion: null, aiContext: null };
+    state = { goals: [], tasks: [], memos: [], settings: defaultSettings(), aiSuggestion: null, aiContext: null, manualOrder: [] };
     activeGoalFilter = "all";
     save();
     renderAll();
