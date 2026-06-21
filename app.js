@@ -28,6 +28,7 @@ function defaultSettings() {
 }
 
 let activeGoalFilter = "all";
+const focusSkipped = new Set(); // 集中モードで「後回し」したタスク（一時的・非永続）
 
 /* ---------- Storage ---------- */
 function load() {
@@ -251,6 +252,16 @@ function renderPriority() {
   const sortSel = document.getElementById("sort-mode");
   if (sortSel) sortSel.value = mode;
 
+  const focusBtn = document.getElementById("focus-btn");
+  if (focusBtn) {
+    focusBtn.classList.toggle("is-active", !!state.settings.focusMode);
+    focusBtn.textContent = state.settings.focusMode ? "🎯 集中中" : "🎯 集中";
+  }
+  const weightEl = document.querySelector(".weight-control");
+  if (weightEl) weightEl.style.display = state.settings.focusMode ? "none" : "";
+
+  if (state.settings.focusMode) { renderFocus(); return; }
+
   const tasks = filteredActiveTasks();
   if (tasks.length === 0) {
     list.innerHTML = emptyState("🗂️", "タスクがありません", "「＋ タスクを追加」から、やるべきことを登録しましょう。");
@@ -274,6 +285,70 @@ function renderPriority() {
   }
 
   list.innerHTML = banner + ranked.map(({ task, pri }) => taskCardHTML(task, pri)).join("");
+}
+
+// 集中モード：現在の並び順の「次の1件」だけを大きく表示
+function renderFocus() {
+  const list = document.getElementById("priority-list");
+  const ranked = rankActive(filteredActiveTasks(), orderForMode(state.settings.sortMode || "score"));
+
+  if (ranked.length === 0) {
+    list.innerHTML = emptyState("🎉", "すべて完了！", "お疲れさまでした。新しいタスクは「＋ タスクを追加」から。");
+    return;
+  }
+
+  const remaining = ranked.filter((x) => !focusSkipped.has(x.task.id));
+  if (remaining.length === 0) {
+    list.innerHTML = `<div class="focus-wrap"><div class="focus-done"><span class="empty-emoji">✅</span><strong>今ある分は一巡しました</strong><div>後回しにしたものだけ残っています。</div><div class="focus-actions"><button class="btn btn-primary" id="focus-reset">後回しを戻してもう一周</button><button class="btn btn-ghost" data-action="focus-exit">一覧に戻る</button></div></div></div>`;
+    const rb = document.getElementById("focus-reset");
+    if (rb) rb.addEventListener("click", () => { focusSkipped.clear(); renderPriority(); });
+    return;
+  }
+
+  const { task, pri } = remaining[0];
+  const goal = task.goalId ? goalById(task.goalId) : null;
+  const tier = priorityTier(pri.score);
+  const dl = deadlineLabel(task.deadline);
+  const remEffort = remaining.reduce((s, x) => s + (x.task.effort || 0), 0);
+
+  const chips = [];
+  if (goal) chips.push(`<span class="chip goal">🎯 ${esc(goal.title)}</span>`);
+  chips.push(`<span class="chip ${dl.cls}">🗓 ${esc(dl.text)}</span>`);
+  chips.push(`<span class="chip">⏱ ${esc(effortLabel(task.effort))}</span>`);
+
+  list.innerHTML = `
+    <div class="focus-wrap" data-id="${esc(task.id)}">
+      <div class="focus-progress">あと ${remaining.length} 件${remEffort ? ` ・ 残り約 ${esc(effortLabel(remEffort))}` : ""}</div>
+      <div class="focus-card pri-${tier}">
+        <div class="focus-title">${esc(task.title)}</div>
+        <div class="task-meta focus-meta">${chips.join("")}</div>
+        ${task.note ? `<div class="focus-note">${esc(task.note)}</div>` : ""}
+        <div class="focus-actions">
+          <button class="btn btn-primary focus-done-btn" data-action="focus-done">✓ 完了</button>
+          <button class="btn btn-ghost" data-action="focus-skip">→ 後回し</button>
+        </div>
+        <div class="focus-sub">
+          <button class="link-btn" data-action="decompose">分解</button>
+          <button class="link-btn" data-action="edit">編集</button>
+          <button class="link-btn" data-action="focus-exit">一覧に戻る</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function focusComplete(id) {
+  const t = state.tasks.find((x) => x.id === id);
+  if (!t) return;
+  t.status = "done";
+  t.completedAt = Date.now();
+  focusSkipped.delete(id);
+  save();
+  renderAll();
+}
+
+function focusSkip(id) {
+  focusSkipped.add(id);
+  renderPriority();
 }
 
 function taskCardHTML(task, pri) {
@@ -713,6 +788,12 @@ function init() {
   document.getElementById("add-task-btn").addEventListener("click", () => openTaskModal(null, null));
   document.getElementById("bulk-task-btn").addEventListener("click", openBulkModal);
   document.getElementById("ics-task-btn").addEventListener("click", openIcsModal);
+  document.getElementById("focus-btn").addEventListener("click", () => {
+    state.settings.focusMode = !state.settings.focusMode;
+    focusSkipped.clear();
+    save();
+    renderPriority();
+  });
   document.getElementById("add-goal-btn").addEventListener("click", () => openGoalModal(null));
 
   // 重みスライダー
@@ -797,6 +878,14 @@ function init() {
       case "decompose": openDecomposeModal(id); break;
       case "move-up": moveTask(id, -1); break;
       case "move-down": moveTask(id, 1); break;
+      case "focus-done": focusComplete(id); break;
+      case "focus-skip": focusSkip(id); break;
+      case "focus-exit":
+        state.settings.focusMode = false;
+        focusSkipped.clear();
+        save();
+        renderPriority();
+        break;
       case "sort-ai":
         state.settings.sortMode = "ai";
         save();
