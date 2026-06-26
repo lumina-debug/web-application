@@ -438,6 +438,19 @@ body {
 .ics-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-soft); margin-bottom: 10px; }
 .ics-opt input { flex-shrink: 0; }
 
+/* ===== 繰り返しタスク（週タスク） ===== */
+.rec-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.rec-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+}
+.rec-row-main { flex: 1; min-width: 0; }
+.rec-row-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.rec-form { border-top: 1px solid var(--border); padding-top: 16px; }
+.rec-form-head { font-weight: 600; color: var(--text-soft); font-size: 14px; margin-bottom: 12px; }
+.weekday-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.wd-btn { min-width: 38px; text-align: center; }
+
 /* ===== Responsive ===== */
 @media (max-width: 560px) {
   .brand-tagline { display: none; }

@@ -18,6 +18,7 @@ let state = {
   aiSuggestion: null, // { orderIds, text, createdAt, model, signature }
   aiContext: null,    // { ids: [taskId...] } — 直近に生成したプロンプトのタスク番号対応
   manualOrder: [],    // 手動並び替えの順序（taskId配列）
+  recurring: [],      // 繰り返しタスク { id, title, weekdays:[0-6], goalId, effort, note, createdAt, lastGenerated }
 };
 
 // APIキーはプロバイダ別に、本体stateとは別保存（エクスポートに混ざらないよう）
@@ -44,6 +45,7 @@ function load() {
         aiSuggestion: parsed.aiSuggestion || null,
         aiContext: parsed.aiContext || null,
         manualOrder: parsed.manualOrder || [],
+        recurring: parsed.recurring || [],
       };
     }
   } catch (e) {
@@ -126,6 +128,10 @@ function nextWeekendStr() {
   d.setDate(d.getDate() + diff);
   return d.toLocaleDateString("sv-SE");
 }
+
+function ymdToDate(s) { return new Date(s + "T00:00:00"); }
+function nextDayStr(s) { const d = ymdToDate(s); d.setDate(d.getDate() + 1); return d.toLocaleDateString("sv-SE"); }
+function weekdayOf(s) { return ymdToDate(s).getDay(); }
 
 /* ---------- Priority calculation ---------- */
 // 締切が近いほど高い（0–100）。期限なしは低め、超過は最大。
@@ -765,6 +771,7 @@ function switchTab(name) {
 
 function init() {
   load();
+  generateRecurring(); // 開いた日のぶんの週タスクを生成
   renderAll();
 
   // タブ
@@ -788,6 +795,7 @@ function init() {
   document.getElementById("add-task-btn").addEventListener("click", () => openTaskModal(null, null));
   document.getElementById("bulk-task-btn").addEventListener("click", openBulkModal);
   document.getElementById("ics-task-btn").addEventListener("click", openIcsModal);
+  document.getElementById("recurring-btn").addEventListener("click", openRecurringModal);
   document.getElementById("focus-btn").addEventListener("click", () => {
     state.settings.focusMode = !state.settings.focusMode;
     focusSkipped.clear();
@@ -864,6 +872,11 @@ function init() {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !overlay.hidden) closeModal(); });
 
+  // タブに戻ったとき（日付が変わっていれば）週タスクを生成
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && generateRecurring() > 0) renderAll();
+  });
+
   // タスクカード／目標カード／メモのクリック（イベント委譲）
   document.querySelector(".content").addEventListener("click", (e) => {
     const actionEl = e.target.closest("[data-action]");
@@ -907,7 +920,7 @@ function init() {
   document.getElementById("load-sample").addEventListener("click", loadSample);
   document.getElementById("clear-all").addEventListener("click", () => {
     if (!confirm("すべてのデータを消去します。よろしいですか？")) return;
-    state = { goals: [], tasks: [], memos: [], settings: defaultSettings(), aiSuggestion: null, aiContext: null, manualOrder: [] };
+    state = { goals: [], tasks: [], memos: [], settings: defaultSettings(), aiSuggestion: null, aiContext: null, manualOrder: [], recurring: [] };
     activeGoalFilter = "all";
     save();
     renderAll();
@@ -1802,6 +1815,151 @@ function openDecomposeModal(taskId) {
 
   openModal();
   document.getElementById("dec-info").focus();
+}
+
+/* =========================================================
+ * 繰り返しタスク（週タスク）— 開いた日にその日のぶんを自動生成
+ * ======================================================= */
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+function weekdaysLabel(arr) {
+  if (!arr || !arr.length) return "毎週";
+  return "毎週 " + arr.slice().sort((a, b) => a - b).map((i) => WEEKDAYS[i]).join("・");
+}
+
+// アプリを開いた日までに到来した「未生成の該当曜日」のタスクを作る。
+// 取りこぼしは直近14日ぶんまで補完（古すぎる分は作らない）。
+function generateRecurring() {
+  if (!state.recurring || !state.recurring.length) return 0;
+  const today = todayStr();
+  const minStr = addDaysStr(-14);
+  let created = 0;
+  state.recurring.forEach((rule) => {
+    if (!rule.weekdays || !rule.weekdays.length) return;
+    let start = rule.lastGenerated ? nextDayStr(rule.lastGenerated) : today; // 新規は今日から（過去は作らない）
+    if (start < minStr) start = minStr;
+    for (let d = start; d <= today; d = nextDayStr(d)) {
+      if (rule.weekdays.includes(weekdayOf(d))) {
+        state.tasks.push({
+          id: uid(), goalId: rule.goalId || null, title: rule.title, deadline: d,
+          effort: rule.effort != null ? rule.effort : null, status: "todo", note: rule.note || "",
+          createdAt: Date.now(), completedAt: null, recurringId: rule.id,
+        });
+        created++;
+      }
+    }
+    rule.lastGenerated = today;
+  });
+  if (created > 0) save();
+  return created;
+}
+
+function openRecurringModal() {
+  modalTitle.textContent = "繰り返しタスク（週タスク）";
+  const goalOpts = [`<option value="">（未分類）</option>`]
+    .concat(state.goals.map((g) => `<option value="${esc(g.id)}">${esc(g.emoji || "🎯")} ${esc(g.title)}</option>`)).join("");
+
+  modalBody.innerHTML = `
+    <p class="ai-sub">毎週決まった曜日に自動で作られるタスクです。アプリを開いた日に、その日のぶんが生成されます。</p>
+    <div id="rec-list" class="rec-list"></div>
+    <div class="rec-form">
+      <div class="rec-form-head" id="rec-form-head">繰り返しを追加</div>
+      <div class="field"><label for="rec-title">タスク名 *</label><input type="text" id="rec-title" placeholder="例）週報を作成する"></div>
+      <div class="field"><label>曜日（複数可）*</label><div class="weekday-row" id="rec-weekdays">${WEEKDAYS.map((w, i) => `<button type="button" class="preset wd-btn" data-wd="${i}">${w}</button>`).join("")}</div></div>
+      <div class="field"><label for="rec-goal">目標</label><select id="rec-goal">${goalOpts}</select></div>
+      <div class="field"><label for="rec-effort">作業見積</label><div class="presets" id="rec-effort-presets">${EFFORT_PRESETS.map((p) => `<button type="button" class="preset" data-min="${p.v}">${p.label}</button>`).join("")}</div><input type="number" id="rec-effort" min="0" step="5" placeholder="分で入力（例：30）" style="margin-top:8px"></div>
+      <div class="field"><label for="rec-note">メモ</label><textarea id="rec-note" rows="2"></textarea></div>
+      <span id="rec-status" class="ai-status"></span>
+      <div class="modal-actions">
+        <button type="button" class="link-btn" id="rec-new" style="display:none">＋ 新規にする</button>
+        <button type="button" class="btn btn-ghost" id="rec-cancel">閉じる</button>
+        <button type="button" class="btn btn-primary" id="rec-save">保存</button>
+      </div>
+    </div>`;
+
+  let editingId = null;
+  const selectedWd = new Set();
+  const $ = (id) => document.getElementById(id);
+  const setStatus = (m) => { $("rec-status").textContent = m; };
+  const updateWd = () => document.querySelectorAll("#rec-weekdays .wd-btn").forEach((b) => b.classList.toggle("is-active", selectedWd.has(Number(b.dataset.wd))));
+
+  function renderList() {
+    const box = $("rec-list");
+    if (!state.recurring.length) { box.innerHTML = `<div class="ai-sub">まだ登録がありません。下のフォームから追加してください。</div>`; return; }
+    box.innerHTML = state.recurring.map((r) => {
+      const g = r.goalId ? goalById(r.goalId) : null;
+      const chips = [`<span class="chip">${esc(weekdaysLabel(r.weekdays))}</span>`, `<span class="chip">⏱ ${esc(effortLabel(r.effort))}</span>`];
+      if (g) chips.unshift(`<span class="chip goal">🎯 ${esc(g.title)}</span>`);
+      return `<div class="rec-row" data-id="${esc(r.id)}"><div class="rec-row-main"><div class="bulk-row-title">${esc(r.title)}</div><div class="task-meta">${chips.join("")}</div></div><div class="rec-row-actions"><button class="link-btn" data-rec="edit">編集</button><button class="link-btn danger" data-rec="del">削除</button></div></div>`;
+    }).join("");
+  }
+
+  function resetForm() {
+    editingId = null;
+    $("rec-title").value = ""; selectedWd.clear(); updateWd();
+    $("rec-goal").value = ""; $("rec-effort").value = ""; $("rec-note").value = "";
+    $("rec-form-head").textContent = "繰り返しを追加"; $("rec-save").textContent = "保存"; $("rec-new").style.display = "none";
+  }
+
+  function loadInto(r) {
+    editingId = r.id;
+    $("rec-title").value = r.title; selectedWd.clear(); (r.weekdays || []).forEach((w) => selectedWd.add(w)); updateWd();
+    $("rec-goal").value = r.goalId || ""; $("rec-effort").value = r.effort != null ? r.effort : ""; $("rec-note").value = r.note || "";
+    $("rec-form-head").textContent = "繰り返しを編集"; $("rec-save").textContent = "更新"; $("rec-new").style.display = "";
+  }
+
+  document.querySelectorAll("#rec-weekdays .wd-btn").forEach((b) => {
+    b.addEventListener("click", () => { const wd = Number(b.dataset.wd); if (selectedWd.has(wd)) selectedWd.delete(wd); else selectedWd.add(wd); updateWd(); });
+  });
+  document.querySelectorAll("#rec-effort-presets .preset").forEach((b) => {
+    b.addEventListener("click", () => { $("rec-effort").value = b.dataset.min; });
+  });
+
+  $("rec-list").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-rec]");
+    if (!btn) return;
+    const row = btn.closest("[data-id]");
+    const id = row && row.dataset.id;
+    const rule = state.recurring.find((r) => r.id === id);
+    if (!rule) return;
+    if (btn.dataset.rec === "edit") { loadInto(rule); }
+    else if (btn.dataset.rec === "del") {
+      if (!confirm("この繰り返しを削除しますか？（生成済みのタスクは残ります）")) return;
+      state.recurring = state.recurring.filter((r) => r.id !== id);
+      if (editingId === id) resetForm();
+      save();
+      renderList();
+    }
+  });
+
+  $("rec-new").addEventListener("click", resetForm);
+  $("rec-cancel").addEventListener("click", closeModal);
+  $("rec-save").addEventListener("click", () => {
+    const title = $("rec-title").value.trim();
+    if (!title) { setStatus("タスク名を入力してください。"); $("rec-title").focus(); return; }
+    if (!selectedWd.size) { setStatus("曜日を1つ以上選んでください。"); return; }
+    const weekdays = Array.from(selectedWd).sort((a, b) => a - b);
+    const goalId = $("rec-goal").value || null;
+    const effRaw = $("rec-effort").value;
+    const effort = effRaw ? Math.max(0, Math.round(Number(effRaw))) : null;
+    const note = $("rec-note").value.trim();
+    if (editingId) {
+      const r = state.recurring.find((x) => x.id === editingId);
+      if (r) Object.assign(r, { title, weekdays, goalId, effort, note });
+    } else {
+      state.recurring.push({ id: uid(), title, weekdays, goalId, effort, note, createdAt: Date.now(), lastGenerated: null });
+    }
+    const created = generateRecurring(); // 今日が該当曜日なら即時生成
+    save();
+    renderAll();
+    renderList();
+    resetForm();
+    setStatus(created > 0 ? `保存しました（今日のぶん ${created}件を作成）。` : "保存しました。");
+  });
+
+  openModal();
+  renderList();
+  $("rec-title").focus();
 }
 
 /* ---------- Sample data ---------- */
