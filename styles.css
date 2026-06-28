@@ -305,7 +305,8 @@ body {
   background: var(--surface);
   border-radius: var(--radius);
   width: 100%; max-width: 480px;
-  max-height: 90vh; overflow-y: auto;
+  max-height: 90vh; max-height: 90dvh; overflow-y: auto;
+  overscroll-behavior: contain;
   box-shadow: 0 12px 48px rgba(20, 30, 50, 0.25);
 }
 .modal-header {
@@ -349,6 +350,8 @@ body {
 .modal-actions {
   display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;
   border-top: 1px solid var(--border); padding-top: 16px;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+  position: sticky; bottom: 0; background: var(--surface); /* スクロールしても常に見える */
 }
 .modal-actions .delete-btn { margin-right: auto; color: var(--danger); }
 
@@ -457,4 +460,6 @@ body {
   .quick-capture { margin-left: 0; width: 100%; }
   .task-card { flex-wrap: wrap; }
   .task-side { flex-direction: row; align-items: center; width: 100%; justify-content: flex-end; }
+  /* iOS(Safari)はフォントが16px未満の入力にフォーカスすると自動ズームする。16pxで防止 */
+  input, select, textarea { font-size: 16px !important; }
 }
