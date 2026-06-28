@@ -1,5 +1,5 @@
 /* 段取り（Dandori）Service Worker — オフライン対応（アプリ本体をキャッシュ） */
-const CACHE = "dandori-v1";
+const CACHE = "dandori-v2";
 const ASSETS = [
   "./",
   "./index.html",
@@ -31,17 +31,16 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // Claude/Gemini など外部APIは介入しない
 
-  // アプリ本体は cache-first（オフラインでも開ける）。新しい同一オリジンGETは取得後にキャッシュ。
+  // ネットワーク優先：オンライン時は常に最新を取得しキャッシュ更新。オフライン時のみキャッシュへフォールバック。
   e.respondWith(
-    caches.match(req).then((cached) =>
-      cached ||
-      fetch(req).then((res) => {
+    fetch(req)
+      .then((res) => {
         if (res && res.ok) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(req, copy));
         }
         return res;
-      }).catch(() => caches.match("./index.html"))
-    )
+      })
+      .catch(() => caches.match(req).then((cached) => cached || caches.match("./index.html")))
   );
 });
