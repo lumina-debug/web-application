@@ -2,9 +2,17 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>段取り（Dandori） — やりたいことを、やるべき順に。</title>
+  <meta name="description" content="やりたいことを、やるべき順に。タスク優先度ボード" />
   <link rel="stylesheet" href="styles.css" />
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#4f5bd5" />
+  <link rel="apple-touch-icon" href="icons/icon-180.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="段取り" />
 </head>
 <body>
   <header class="app-header">
@@ -161,5 +169,13 @@
   </footer>
 
   <script src="app.js"></script>
+  <script>
+    // PWA: Service Worker 登録（https または localhost でのみ有効）
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("sw.js").catch(function () { /* 失敗しても通常動作 */ });
+      });
+    }
+  </script>
 </body>
 </html>
