@@ -492,8 +492,16 @@ const overlay = document.getElementById("modal-overlay");
 const modalTitle = document.getElementById("modal-title");
 const modalBody = document.getElementById("modal-body");
 
-function openModal() { overlay.hidden = false; }
-function closeModal() { overlay.hidden = true; modalBody.innerHTML = ""; }
+// ヘッダーの「保存」ボタン（iPhoneでキーボードに隠れず1タップで保存できる用）
+let headerSaveHandler = null;
+function setHeaderSave(handler) {
+  headerSaveHandler = handler || null;
+  const btn = document.getElementById("modal-save");
+  if (btn) btn.hidden = !handler;
+}
+
+function openModal() { setHeaderSave(null); overlay.hidden = false; }
+function closeModal() { overlay.hidden = true; modalBody.innerHTML = ""; setHeaderSave(null); }
 
 const EFFORT_PRESETS = [
   { label: "15分", v: 15 }, { label: "30分", v: 30 }, { label: "1時間", v: 60 },
@@ -585,6 +593,7 @@ function openTaskModal(taskId, presetGoalId, prefill) {
   if (task) document.getElementById("f-delete").addEventListener("click", () => deleteTask(taskId));
 
   openModal();
+  setHeaderSave(() => saveTask(taskId, prefill)); // ヘッダーの保存（キーボード表示中でも押せる）
   document.getElementById("f-title").focus();
 }
 
@@ -668,9 +677,7 @@ function openGoalModal(goalId) {
     });
   });
 
-  document.getElementById("g-cancel").addEventListener("click", closeModal);
-  document.getElementById("goal-form").addEventListener("submit", (e) => {
-    e.preventDefault();
+  function saveGoal() {
     const title = document.getElementById("g-title").value.trim();
     if (!title) { document.getElementById("g-title").focus(); return; }
     const desc = document.getElementById("g-desc").value.trim();
@@ -682,7 +689,10 @@ function openGoalModal(goalId) {
     save();
     renderAll();
     closeModal();
-  });
+  }
+
+  document.getElementById("g-cancel").addEventListener("click", closeModal);
+  document.getElementById("goal-form").addEventListener("submit", (e) => { e.preventDefault(); saveGoal(); });
   if (goal) {
     document.getElementById("g-delete").addEventListener("click", () => {
       const tasks = tasksForGoal(goalId);
@@ -699,6 +709,7 @@ function openGoalModal(goalId) {
   }
 
   openModal();
+  setHeaderSave(saveGoal); // ヘッダーの保存
   document.getElementById("g-title").focus();
 }
 
@@ -867,8 +878,9 @@ function init() {
     setAiStatus("APIキーを削除しました。");
   });
 
-  // モーダルを閉じる
+  // モーダルを閉じる／ヘッダーの保存
   document.getElementById("modal-close").addEventListener("click", closeModal);
+  document.getElementById("modal-save").addEventListener("click", () => { if (headerSaveHandler) headerSaveHandler(); });
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !overlay.hidden) closeModal(); });
 

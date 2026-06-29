@@ -315,6 +315,8 @@ body {
   position: sticky; top: 0; background: var(--surface);
 }
 .modal-header h2 { margin: 0; font-size: 17px; }
+.modal-header-actions { display: flex; align-items: center; gap: 8px; }
+.modal-header-save { padding: 8px 18px; font-size: 14px; }
 .modal-body { padding: 20px; }
 .modal-body form { margin: 0; }
 .field { margin-bottom: 16px; }

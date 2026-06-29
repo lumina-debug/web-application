@@ -156,7 +156,10 @@
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-header">
         <h2 id="modal-title">タスク</h2>
-        <button id="modal-close" class="icon-btn" aria-label="閉じる">×</button>
+        <div class="modal-header-actions">
+          <button type="button" id="modal-save" class="btn btn-primary modal-header-save" hidden>保存</button>
+          <button type="button" id="modal-close" class="icon-btn" aria-label="閉じる">×</button>
+        </div>
       </div>
       <div id="modal-body" class="modal-body"></div>
     </div>
