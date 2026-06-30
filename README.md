@@ -52,7 +52,40 @@ AIの「直接依頼」も使えるよう、ローカルサーバー（`http://l
 > 公開リポジトリならGitHub Pagesは無料です（非公開の場合は Netlify / Cloudflare Pages 等の無料ホスティングでも可）。
 > AIの「直接依頼」はHTTPS公開なら動作します。
 
-**注意：データは端末ごと（そのブラウザのlocalStorage）に保存されます。** 現状、PCとスマホの間でタスクは自動同期されません（同期は今後の対応予定。当面は JSON エクスポート/インポートで手動移行が可能になる予定です）。
+**注意：ログインしない場合、データは端末ごと（そのブラウザのlocalStorage）に保存されます。** 端末間で使うには、下の「アカウント連携で自動同期」を設定するか、フッターの「📤 書き出し / 📥 取り込み」で手動移行できます。
+
+## アカウント連携で自動同期（Firebase）
+
+Googleアカウントでログインすると、タスク・目標・メモ・設定などが**クラウド（Firestore）に保存され、複数端末で自動同期**されます。ログインしなくても、これまで通り端末内だけで利用できます。
+
+> **APIキーは同期されません。** Claude / Gemini のAPIキーは引き続きその端末のローカルにのみ保存され、クラウドにも書き出しデータにも一切含まれません。
+
+同期には無料の Firebase プロジェクトが必要です（初回のみ・数分）。フッターの「☁️ ログイン / 同期…」を開くと、画面内に手順とコピペ用の設定欄があります。概要：
+
+1. [Firebase Console](https://console.firebase.google.com/) でプロジェクトを作成
+2. **Authentication → Sign-in method** で **Google** を有効化
+3. **Firestore Database** を作成
+4. **プロジェクトの設定 → マイアプリ** でウェブアプリを追加し、表示される `firebaseConfig` の値を同期パネルの設定欄に入力
+5. Firestore の**ルール**を「本人だけが読み書き」に設定：
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /users/{userId} {
+         allow read, write: if request.auth != null && request.auth.uid == userId;
+       }
+     }
+   }
+   ```
+
+6.（公開URLで使う場合）Authentication →「設定」→「承認済みドメイン」に公開ドメインを追加
+
+設定した `firebaseConfig` はその端末のlocalStorageにのみ保存されます（クラウドには送りません）。競合は **last-write-wins**（最後に保存した内容が優先）で解決します。
+
+### 手動バックアップ / 端末間移行（JSON）
+
+フッターの **「📤 書き出し」** で全データを JSON ファイルに保存、**「📥 取り込み」** で別端末や復元時に読み込めます（APIキーは含まれません）。同期を設定する前の保険にもなります。
 
 ## 主な機能
 
@@ -87,11 +120,11 @@ AIの「直接依頼」も使えるよう、ローカルサーバー（`http://l
 index.html   画面構造
 styles.css   見た目
 app.js       状態管理・優先度計算・描画（バニラJS、フレームワーク不使用）
+sync.js      クラウド同期（Firebase Auth + Firestore。ESM CDNを動的import）
 ```
 
 ## 今後の発展（アイデア）
 
-- 複数端末での同期（バックエンド + ログイン）
 - 議事録テキストからのタスク自動抽出
 - 定例レポート（日報・週報）の自動生成
-- データのエクスポート／インポート（JSON / CSV）
+- CSV エクスポート、共有・共同編集

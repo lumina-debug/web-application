@@ -9,8 +9,9 @@
 
 - **何のアプリ**：個人向けのタスク優先度ボード「段取り（Dandori）」。日本語UI。
 - **技術**：**バニラ HTML/CSS/JS のみ。ビルド不要・依存ゼロ**。データは `localStorage`。サーバーなし。
-- **作業ブランチ**：`claude/funny-tesla-bk7f0g`（リポジトリ `lumina-debug/web-application`）。ここにコミット＆プッシュ。**PRはユーザーが明示的に頼むまで作らない**。
-- **次にやること**：**アカウント連携＆自動同期**（Firebase 想定）。詳細は §8。
+- **作業ブランチ**：現在は `claude/account-linking-auto-sync-mdirkh`（前作業 `claude/funny-tesla-bk7f0g` を引き継いで作成。リポジトリ `lumina-debug/web-application`）。ここにコミット＆プッシュ。**PRはユーザーが明示的に頼むまで作らない**。
+- **直近の実装**：**アカウント連携＆自動同期**（Firebase Auth/Google ＋ Firestore）と **JSON 書き出し/取り込み** を実装済み（§8）。実接続テストはユーザーが Firebase プロジェクトを作って `firebaseConfig` を設定後に行う。
+- **次にやること候補**：CSV エクスポート、議事録→タスク抽出、定例レポート自動生成 など。
 - **ローカル実行**：`python -m http.server 8000` → `http://localhost:8000`。
   - AIの「直接依頼」は **CORSの都合で `http://localhost`（HTTPS）でのみ動作**。`file://` では不可（コピペ方式は可）。
 - **検証のしかた**：`node --check app.js` / `node --check sw.js`、`manifest.json` は `JSON.parse` で妥当性確認。ロジックは Node で小さく再現テスト（これまでもそうしてきた）。
@@ -23,8 +24,9 @@
 index.html          画面構造（タブ、モーダルの共通シェル、PWAタグ）
 styles.css          見た目（CSS変数。末尾にモバイル用 @media (max-width:560px)）
 app.js              すべてのロジック（約2000行・単一ファイル。フレームワーク不使用）
+sync.js             クラウド同期（Firebase Auth/Google ＋ Firestore）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合
 manifest.json       PWA マニフェスト
-sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v2"）
+sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v3"）
 icons/              icon-192.png / icon-512.png / icon-180.png（優先度リストのモチーフ）
 start-dandori.vbs   Windows自動起動用（サーバーを隠れて起動しブラウザで開く）
 start-dandori.bat   同上（ウィンドウ表示版）
@@ -48,13 +50,15 @@ state = {
   aiContext:    { ids: [taskId...] } | null,   // 直近に生成したプロンプトのタスク番号→id対応
   manualOrder:  [ taskId... ],                  // 手動並び替え順
   recurring:    [ { id, title, weekdays:[0-6], goalId, effort, note, createdAt, lastGenerated } ],
+  updatedAt:    1730000000000,                  // 最終更新ms。クラウド同期の last-write-wins 判定に使用
 }
 ```
 
 - `task.deadline` は `"YYYY-MM-DD"` か `null`。`task.effort` は分（整数）か `null`。
 - `task.status` は `"todo" | "doing" | "done"`。
 - **APIキーは state とは別保存**：`localStorage["dandori.apiKey"]`（Claude）/ `localStorage["dandori.geminiKey"]`（Gemini）。
-  **意図的に state に入れていない**（将来の同期・エクスポートに混ぜないため）。
+  **意図的に state に入れていない**（同期・書き出しに混ぜないため）。同様に **`firebaseConfig` も別保存**：`localStorage["dandori.firebaseConfig"]`（端末ローカルのみ・クラウドへは送らない）。
+- `save()` は毎回 `state.updatedAt = Date.now()` を打ち、ローカル変更を `saveListeners`（=sync.js）へ通知する。外部反映（取り込み/クラウド）中は `suppressSaveNotify` で通知を止めてエコー（再push）を防ぐ。
 
 ---
 
@@ -155,46 +159,46 @@ state = {
 
 ---
 
-## 8. 次の作業：アカウント連携＆自動同期（未着手）
+## 8. アカウント連携＆自動同期（実装済み）
 
-ユーザー合意済みの方針（最終確認は次セッション冒頭で取る）：
+§8 は実装完了。**実接続テストはユーザーが Firebase プロジェクトを作って `firebaseConfig` を設定後に行う**（コードはブラウザでのロード/ブリッジ/UI/書き出しまで Playwright で検証済み）。
 
-- **方式**：Firebase（**Authでログイン＋Firestoreでリアルタイム同期**）。サーバー自前なし、無料枠、静的PWAのまま動く。
-- **ログイン**：Google ログイン（最有力）。
-- **同期対象**：`state`（tasks/goals/memos/recurring/settings/manualOrder 等）。**APIキーは同期しない**（端末ローカル維持＝既に別localStorage）。
-- **保存単位**：`users/{uid}` に1ドキュメント（全state）。Firestoreセキュリティルールで **本人のみ読み書き**（`request.auth.uid == userId`）。
-- **マージ方針**：1人利用が前提なので原則 **last-write-wins ＋ updatedAt**。ログイン時に「リモート取得→新しい方を採用→ローカル反映」、以後はリアルタイム購読＋ローカル変更をデバウンスでpush。
-- **オフライン**：Firestoreのオフライン永続でPWAと相性良。
+### 実装したもの
+- **JSON 書き出し / 取り込み**（app.js）：フッターの「📤 書き出し」「📥 取り込み」。`exportData()` / `importDataFromFile(file)`。取り込みは `tasks` 配列の有無で妥当性チェックし、確認の上 `Dandori.applyExternalState(obj, {notify:true, touch:true})` で全置換（最新扱い＝ログイン中ならクラウドへも反映）。**APIキーは含まれない**。
+- **Firebase 同期**（`sync.js`、`<script type="module">`）：
+  - **Auth**：Google ログイン（`signInWithPopup`）。既定の local 永続でセッションは自動復元。
+  - **Firestore**：`users/{uid}` に state 全体を1ドキュメントで保存。`persistentLocalCache`（多タブ）でオフライン永続、失敗時は `getFirestore` にフォールバック。
+  - **CDN 動的import**：`https://www.gstatic.com/firebasejs/10.12.5/firebase-{app,auth,firestore}.js` を必要時に import（静的構成維持、app.js は据え置き）。
+  - **last-write-wins**：ログイン時に remote を取得し `updatedAt` 比較→新しい方を採用（remoteが新→`applyExternalState(notify:false)`、localが新→push、無ければ初回push）。以後 `onSnapshot` でリアルタイム購読＋ローカル変更を `schedulePush()`（1.2s デバウンス）で push。
+  - **エコー防止**：自分の書き込みは `snapshot.metadata.hasPendingWrites` と `updatedAt` 比較でスキップ。外部反映中は app.js 側 `suppressSaveNotify` で再push抑止。
+  - **設定**：`firebaseConfig` は同期パネルの設定UIから入力し `localStorage["dandori.firebaseConfig"]` に端末ローカル保存（6項目を個別入力。eval不使用）。手順とセキュリティルールもパネル内に表示。
+- **app.js ブリッジ `window.Dandori`**：`getState()` / `getStateJSON()` / `getUpdatedAt()` / `applyExternalState(obj,{notify,touch})` / `onSave(cb)`。sync.js はこれ経由で疎結合（app.js は Firebase を知らない）。
 
-### 進め方の提案（2段階）
-1. **JSONエクスポート/インポート**（軽い中間策・すぐ作れる）… 手動で端末間移行。同期前の保険にもなる。
-2. **Firebase同期**（本命）… 下記の準備をユーザーに依頼してから実装。
+### UI
+- フッターに「☁️ ログイン / 同期…」ボタン（`#sync-btn`）＋ ログイン中の状態表示（`#sync-state`）。
+- sync.js が独自モーダル（既存 `.modal-overlay`/`.modal` クラス流用）を生成：未設定→設定フォーム、設定済み未ログイン→Googleログイン、ログイン中→アカウント表示＋ログアウト。
 
-### ユーザーにやってもらう準備（手順は次セッションで提示）
-1. Firebaseプロジェクト作成（無料）
-2. Authentication で Google を有効化
-3. Firestore データベース作成
-4. ウェブアプリ登録 → `firebaseConfig`（apiKey等）を取得 → アプリに設定（※このapiKeyはクライアント公開前提でOK／秘密ではない）
-5. Firestore セキュリティルールを本人限定に設定
+### ユーザー側の準備（パネル内にも記載）
+1. Firebaseプロジェクト作成（無料）→ 2. Authentication で Google 有効化 → 3. Firestore 作成 → 4. ウェブアプリ登録→ `firebaseConfig` を同期パネルに入力 → 5. Firestore ルールを本人限定（`request.auth.uid == userId`）→ 6.（公開URLなら）承認済みドメイン追加。
 
-### 実装の留意点
-- 静的構成を維持するなら Firebase は **ESM CDN（`https://www.gstatic.com/firebasejs/.../firebase-*.js`）を `import`** で読み込む `<script type="module">` を別途用意するのが楽（既存 app.js はそのまま、同期モジュールを追加する形が無難）。
-- SW がCDNをキャッシュしないよう注意（現状 別オリジンは介入しないのでOK）。
-- ログインUIの置き場：フッターかヘッダーに「ログイン/同期」ボタン。未ログインでも従来通りローカルで動く設計に。
+### 留意点 / TODO
+- 実接続は未検証（Firebase未作成のため）。ログイン後の往復同期はユーザー環境での確認待ち。
+- 競合は last-write-wins（フィールド単位マージはしない＝1人利用前提）。複数端末で同時編集すると後勝ち。
+- SW は別オリジン（CDN）に介入しない設計のまま（OK）。`sync.js` 自体は同一オリジンなので `dandori-v3` に追加済み。
 
 ---
 
 ## 9. 既知の注意点・未対応
 
-- **データは端末ごと**（origin単位）。`file://` / `localhost` / 公開URL はそれぞれ別の保存先。→ §8の同期で解決予定。
+- **データは端末ごと**（origin単位）。`file://` / `localhost` / 公開URL はそれぞれ別の保存先。→ §8の同期（ログイン）で端末横断は解決。未ログイン時は従来どおり origin 単位。
 - Gemini 2.5系は「思考」で出力トークンを使い切ることがある→ まとめ入力/分解は `maxTokens=8192` で緩和済み。完全無効化（thinkingBudget:0）はモデル依存で未導入（Pro/新モデルで400の恐れ）。
 - 繰り返しは「毎週」のみ（隔週・毎月・平日毎日などは未対応）。
 - フッターの「キャンセル」ボタンはユーザーが「不要かも」と言及（×でも閉じられる）。要否は次セッションで確認。
-- データのエクスポート/インポートは未実装。
+- JSON エクスポート/インポート・Firebase同期は実装済み（§8）。CSV や共同編集は未対応。
 
 ---
 
 ## 10. これまでの主な変更履歴（ブランチのコミット要旨）
 
-MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemini対応 → まとめて入力 → JSON解析堅牢化 → タスク分解 → 手動並び替え → 集中モード → 週タスク → Windows自動起動 → PWA化 → SWネットワーク優先 → iOSモーダル改善 → ヘッダー保存ボタン。
+MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemini対応 → まとめて入力 → JSON解析堅牢化 → タスク分解 → 手動並び替え → 集中モード → 週タスク → Windows自動起動 → PWA化 → SWネットワーク優先 → iOSモーダル改善 → ヘッダー保存ボタン → **JSON書き出し/取り込み＋Firebaseアカウント連携・自動同期**。
 （`git log --oneline` で詳細確認）

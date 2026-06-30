@@ -19,6 +19,7 @@ let state = {
   aiContext: null,    // { ids: [taskId...] } — 直近に生成したプロンプトのタスク番号対応
   manualOrder: [],    // 手動並び替えの順序（taskId配列）
   recurring: [],      // 繰り返しタスク { id, title, weekdays:[0-6], goalId, effort, note, createdAt, lastGenerated }
+  updatedAt: 0,       // 最終更新時刻（ms）。クラウド同期の last-write-wins 判定に使用
 };
 
 // APIキーはプロバイダ別に、本体stateとは別保存（エクスポートに混ざらないよう）
@@ -32,33 +33,117 @@ let activeGoalFilter = "all";
 const focusSkipped = new Set(); // 集中モードで「後回し」したタスク（一時的・非永続）
 
 /* ---------- Storage ---------- */
+// 生のオブジェクト（localStorage / インポート / クラウド）を state の形に整える
+function normalizeState(parsed) {
+  parsed = parsed || {};
+  return {
+    goals: parsed.goals || [],
+    tasks: parsed.tasks || [],
+    memos: parsed.memos || [],
+    settings: Object.assign(defaultSettings(), parsed.settings || {}),
+    aiSuggestion: parsed.aiSuggestion || null,
+    aiContext: parsed.aiContext || null,
+    manualOrder: parsed.manualOrder || [],
+    recurring: parsed.recurring || [],
+    updatedAt: parsed.updatedAt || 0,
+  };
+}
+
 function load() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      state = {
-        goals: parsed.goals || [],
-        tasks: parsed.tasks || [],
-        memos: parsed.memos || [],
-        settings: Object.assign(defaultSettings(), parsed.settings || {}),
-        aiSuggestion: parsed.aiSuggestion || null,
-        aiContext: parsed.aiContext || null,
-        manualOrder: parsed.manualOrder || [],
-        recurring: parsed.recurring || [],
-      };
-    }
+    if (raw) state = normalizeState(JSON.parse(raw));
   } catch (e) {
     console.warn("保存データの読み込みに失敗しました:", e);
   }
 }
 
+// 同期ブリッジ（sync.js）へ「ローカル変更が保存された」ことを知らせるリスナー
+const saveListeners = [];
+let suppressSaveNotify = false; // 外部反映中は通知を止めてエコー（再push）を防ぐ
+
 function save() {
   try {
+    state.updatedAt = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
     console.warn("保存に失敗しました:", e);
   }
+  if (!suppressSaveNotify) notifySaveListeners();
+}
+
+function notifySaveListeners() {
+  for (const cb of saveListeners) {
+    try { cb(); } catch (e) { /* リスナーの失敗は無視 */ }
+  }
+}
+
+/* ---------- 同期ブリッジ（sync.js / インポートから利用） ----------
+ * APIキーは state に含まれない（別 localStorage）ため、ここを通る同期・
+ * 書き出しには絶対に混ざらない。 */
+const Dandori = {
+  // 現在の同期対象 state（参照）
+  getState() { return state; },
+  getStateJSON() { return JSON.stringify(state); },
+  getUpdatedAt() { return state.updatedAt || 0; },
+
+  // 外部（取り込みファイル / クラウド）の生オブジェクトで state を丸ごと差し替え、
+  // 保存して再描画する。
+  //   opts.notify === false … save通知（=クラウドへの再push）を出さない（エコー防止）
+  //   opts.touch === true   … updatedAt を「今」に更新して必ず最新扱いにする（取り込み用）
+  applyExternalState(obj, opts) {
+    opts = opts || {};
+    const notify = opts.notify !== false;
+    state = normalizeState(obj);
+    if (opts.touch) state.updatedAt = Date.now();
+    activeGoalFilter = "all";
+    suppressSaveNotify = true;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
+    suppressSaveNotify = false;
+    if (notify) notifySaveListeners();
+    renderAll();
+  },
+
+  // ローカル変更が保存されるたびに呼ばれるコールバックを登録
+  onSave(cb) { if (typeof cb === "function") saveListeners.push(cb); },
+};
+window.Dandori = Dandori;
+
+/* ---------- データの書き出し / 取り込み（端末間移行・バックアップ） ---------- */
+function exportData() {
+  const blob = new Blob([Dandori.getStateJSON()], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `dandori-backup-${todayStr()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function importDataFromFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    let obj;
+    try {
+      obj = JSON.parse(String(reader.result));
+    } catch (e) {
+      alert("読み込みに失敗しました。JSONとして解釈できませんでした。");
+      return;
+    }
+    if (!obj || typeof obj !== "object" || !Array.isArray(obj.tasks)) {
+      alert("このファイルは段取りのバックアップではないようです。");
+      return;
+    }
+    if (!confirm("現在のデータを、取り込むデータで置き換えます。よろしいですか？\n（不安な場合は先に「書き出し」でバックアップを取ってください）")) return;
+    // 取り込んだものを「最新」として扱う（ログイン中ならクラウドへも反映）
+    Dandori.applyExternalState(obj, { notify: true, touch: true });
+    alert("取り込みました。");
+  };
+  reader.onerror = () => alert("ファイルの読み込みに失敗しました。");
+  reader.readAsText(file);
 }
 
 /* ---------- Utilities ---------- */
@@ -932,10 +1017,19 @@ function init() {
   document.getElementById("load-sample").addEventListener("click", loadSample);
   document.getElementById("clear-all").addEventListener("click", () => {
     if (!confirm("すべてのデータを消去します。よろしいですか？")) return;
-    state = { goals: [], tasks: [], memos: [], settings: defaultSettings(), aiSuggestion: null, aiContext: null, manualOrder: [], recurring: [] };
+    state = { goals: [], tasks: [], memos: [], settings: defaultSettings(), aiSuggestion: null, aiContext: null, manualOrder: [], recurring: [], updatedAt: 0 };
     activeGoalFilter = "all";
     save();
     renderAll();
+  });
+
+  // 書き出し / 取り込み（JSONバックアップ・端末間移行）
+  document.getElementById("export-data").addEventListener("click", exportData);
+  const importInput = document.getElementById("import-file");
+  document.getElementById("import-data").addEventListener("click", () => importInput.click());
+  importInput.addEventListener("change", () => {
+    importDataFromFile(importInput.files && importInput.files[0]);
+    importInput.value = ""; // 同じファイルを連続選択できるようリセット
   });
 }
 

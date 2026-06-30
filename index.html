@@ -166,12 +166,18 @@
   </div>
 
   <footer class="app-footer">
+    <button id="sync-btn" class="link-btn">☁️ ログイン / 同期…</button>
+    <span id="sync-state" class="sync-state" hidden></span>
+    <button id="export-data" class="link-btn">📤 書き出し</button>
+    <button id="import-data" class="link-btn">📥 取り込み</button>
     <button id="load-sample" class="link-btn">サンプルデータを入れる</button>
     <button id="clear-all" class="link-btn danger">全データを消去</button>
-    <span class="footer-note">データはこのブラウザ内（localStorage）にのみ保存されます。</span>
+    <span class="footer-note">データはこのブラウザ内（localStorage）に保存されます。ログインすると複数端末で自動同期します（APIキーは同期されません）。</span>
+    <input id="import-file" type="file" accept="application/json,.json" hidden />
   </footer>
 
   <script src="app.js"></script>
+  <script type="module" src="sync.js"></script>
   <script>
     // PWA: Service Worker 登録（https または localhost でのみ有効）
     if ("serviceWorker" in navigator) {
