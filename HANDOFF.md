@@ -9,8 +9,9 @@
 
 - **何のアプリ**：個人向けのタスク優先度ボード「段取り（Dandori）」。日本語UI。
 - **技術**：**バニラ HTML/CSS/JS のみ。ビルド不要・依存ゼロ**。データは `localStorage`。サーバーなし。
-- **作業ブランチ**：現在は `claude/account-linking-auto-sync-mdirkh`（前作業 `claude/funny-tesla-bk7f0g` を引き継いで作成。リポジトリ `lumina-debug/web-application`）。ここにコミット＆プッシュ。**PRはユーザーが明示的に頼むまで作らない**。
-- **直近の実装**：**アカウント連携＆自動同期**（Firebase Auth/Google ＋ Firestore）と **JSON 書き出し/取り込み** を実装済み（§8）。実接続テストはユーザーが Firebase プロジェクトを作って `firebaseConfig` を設定後に行う。
+- **公開URL / 配信ブランチ**：**https://lumina-debug.github.io/web-application/**（GitHub Pages）。**配信元は `claude/funny-tesla-bk7f0g`＝これが本番・正本ブランチ**。セッションごとに作られる作業ブランチ（例 `claude/account-linking-auto-sync-mdirkh`）の成果は、**最終的に funny-tesla に反映（fast-forward）して公開する**こと。ユーザーは funny-tesla を「元のブランチ」として認識している。
+- **作業の進め方**：各セッションの作業ブランチは funny-tesla を土台に作成 → 作業 → **funny-tesla へ反映してプッシュ**（＝サイト更新）。**PRはユーザーが明示的に頼むまで作らない**。
+- **直近の実装**：**アカウント連携＆自動同期**（Firebase Auth/Google ＋ Firestore）＋ **JSON 書き出し/取り込み**（§8）／**至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え**（§11）。同期の実接続テストはユーザーが Firebase を用意後に行う。
 - **次にやること候補**：CSV エクスポート、議事録→タスク抽出、定例レポート自動生成 など。
 - **ローカル実行**：`python -m http.server 8000` → `http://localhost:8000`。
   - AIの「直接依頼」は **CORSの都合で `http://localhost`（HTTPS）でのみ動作**。`file://` では不可（コピペ方式は可）。
@@ -200,5 +201,14 @@ state = {
 
 ## 10. これまでの主な変更履歴（ブランチのコミット要旨）
 
-MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemini対応 → まとめて入力 → JSON解析堅牢化 → タスク分解 → 手動並び替え → 集中モード → 週タスク → Windows自動起動 → PWA化 → SWネットワーク優先 → iOSモーダル改善 → ヘッダー保存ボタン → **JSON書き出し/取り込み＋Firebaseアカウント連携・自動同期**。
+MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemini対応 → まとめて入力 → JSON解析堅牢化 → タスク分解 → 手動並び替え → 集中モード → 週タスク → Windows自動起動 → PWA化 → SWネットワーク優先 → iOSモーダル改善 → ヘッダー保存ボタン → **JSON書き出し/取り込み＋Firebaseアカウント連携・自動同期** → **至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え**。
 （`git log --oneline` で詳細確認）
+
+---
+
+## 11. 至急タスク／まとめて選択／ドラッグ並び替え（app.js）
+
+- **至急（pinned）**：`task.pinned` / `task.pinnedAt`。`rankActive()` がどのモードでも pinned を先頭グループへ。追加は「🔥 至急を追加」ボタン（`openTaskModal(null,null,{pinned:true})`）・モーダルの `#f-pinned`・カードの `data-action="pin-toggle"`（`togglePin`）。新規pinnedは `pinToFront()` で手動順の先頭にも入る。
+- **まとめて選択**：`selectMode` / `selectedIds`（非永続）。「☑️ 選択」で切替。カードに `.select-check`、上部に `.bulk-bar`（すべて選択/選択解除/削除/終了）。`bulkDeleteSelected()` が一括削除。
+- **ドラッグ&ドロップ**：`.drag-handle`（⠿）を Pointer Events で掴む（`onListPointerDown/Move/Up`、`#priority-list` に委譲）。マウス/タッチ両対応（handleに `touch-action:none`）。ドロップで DOM順を `commitDraggedOrder()` が手動順へ反映＋手動モードへ。フィルタで隠れたタスクの相対位置は保持。
+- 手動順の初期化は `ensureManualOrderInitialized()` に共通化（`moveTask` と共用）。
