@@ -31,6 +31,8 @@ function defaultSettings() {
 
 let activeGoalFilter = "all";
 const focusSkipped = new Set(); // 集中モードで「後回し」したタスク（一時的・非永続）
+let selectMode = false;         // まとめて選択モード（一時的・非永続）
+const selectedIds = new Set();  // 選択中のタスクID（一時的・非永続）
 
 /* ---------- Storage ---------- */
 // 生のオブジェクト（localStorage / インポート / クラウド）を state の形に整える
@@ -303,10 +305,13 @@ function renderGoalFilter() {
 }
 
 // orderIds の順に並べ、未掲載はスコア順で末尾へ（スコア/AI/手動で共用）
+// 「至急（pinned）」タスクはどのモードでも常に先頭グループに来る。
 function rankActive(tasks, orderIds) {
   return tasks
     .map((t) => ({ task: t, pri: priorityOf(t) }))
     .sort((a, b) => {
+      // 至急は常に上。至急どうし・通常どうしは以下の共通ロジックで並べる
+      if (!!a.task.pinned !== !!b.task.pinned) return a.task.pinned ? -1 : 1;
       if (orderIds && orderIds.length) {
         const ia = orderIds.indexOf(a.task.id);
         const ib = orderIds.indexOf(b.task.id);
@@ -314,6 +319,8 @@ function rankActive(tasks, orderIds) {
         const rb = ib === -1 ? Infinity : ib;
         if (ra !== rb) return ra - rb;
       }
+      // 同順位の最終タイブレーク：至急どうしは至急にした時刻の新しい順、通常はスコア順
+      if (a.task.pinned && b.task.pinned) return (b.task.pinnedAt || 0) - (a.task.pinnedAt || 0);
       return b.pri.score - a.pri.score;
     });
 }
@@ -348,6 +355,11 @@ function renderPriority() {
     focusBtn.classList.toggle("is-active", !!state.settings.focusMode);
     focusBtn.textContent = state.settings.focusMode ? "🎯 集中中" : "🎯 集中";
   }
+  const selBtn = document.getElementById("select-btn");
+  if (selBtn) {
+    selBtn.classList.toggle("is-active", selectMode);
+    selBtn.textContent = selectMode ? "✓ 選択中" : "☑️ 選択";
+  }
   const weightEl = document.querySelector(".weight-control");
   if (weightEl) weightEl.style.display = state.settings.focusMode ? "none" : "";
 
@@ -361,6 +373,19 @@ function renderPriority() {
 
   const ranked = rankActive(tasks, orderForMode(mode));
 
+  // 選択モードの一括操作バー（モードのバナーとは別に常に先頭へ）
+  let topBar = "";
+  if (selectMode) {
+    const n = selectedIds.size;
+    topBar = `<div class="bulk-bar">
+      <span class="bulk-count">${n ? `${n}件を選択中` : "タスクを選択してください"}</span>
+      <button class="btn btn-ghost" data-action="select-all">すべて選択</button>
+      <button class="btn btn-ghost" data-action="select-clear">選択解除</button>
+      <button class="btn btn-danger" data-action="bulk-delete" ${n ? "" : "disabled"}>🗑 削除</button>
+      <button class="link-btn" data-action="select-exit">選択モードを終了</button>
+    </div>`;
+  }
+
   let banner = "";
   if (mode === "ai") {
     if (state.aiSuggestion && state.aiSuggestion.orderIds.length) {
@@ -372,10 +397,15 @@ function renderPriority() {
   } else if (mode === "manual") {
     const aiBtn = (state.aiSuggestion && state.aiSuggestion.orderIds.length)
       ? `<button class="link-btn" data-action="sort-ai">AI提案順に戻す</button>` : "";
-    banner = `<div class="ai-banner">✋ 手動並び替え中（各カードの ↑↓ で入れ替え）${aiBtn}<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
+    banner = `<div class="ai-banner">✋ 手動並び替え中（⠿ドラッグ／各カードの ↑↓ で入れ替え）${aiBtn}<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
   }
 
-  list.innerHTML = banner + ranked.map(({ task, pri }) => taskCardHTML(task, pri)).join("");
+  // 通常時は並び替えのヒントを一度だけ表示（選択モード中は出さない）
+  if (!selectMode && !banner) {
+    banner = `<div class="reorder-hint">⠿ をドラッグ、または各カードの ↑↓ で並び替えできます。</div>`;
+  }
+
+  list.innerHTML = topBar + banner + ranked.map(({ task, pri }) => taskCardHTML(task, pri)).join("");
 }
 
 // 集中モード：現在の並び順の「次の1件」だけを大きく表示
@@ -447,15 +477,24 @@ function taskCardHTML(task, pri) {
   const goal = task.goalId ? goalById(task.goalId) : null;
   const dl = deadlineLabel(task.deadline);
   const doneCls = task.status === "done" ? "is-done" : "";
+  const pinnedCls = task.pinned ? "is-pinned" : "";
+  const selCls = selectMode && selectedIds.has(task.id) ? "is-selected" : "";
 
   const chips = [];
+  if (task.pinned) chips.push(`<span class="chip urgent">🔥 至急</span>`);
   if (goal) chips.push(`<span class="chip goal">${esc(goal.emoji || "🎯")} ${esc(goal.title)}</span>`);
   chips.push(`<span class="chip ${dl.cls}">🗓 ${esc(dl.text)}</span>`);
   chips.push(`<span class="chip">⏱ ${esc(effortLabel(task.effort))}</span>`);
   if (task.status === "doing") chips.push(`<span class="chip doing">進行中</span>`);
 
+  // 選択モード中：ドラッグ無効＋選択チェックボックスを表示
+  const lead = selectMode
+    ? `<input type="checkbox" class="select-check" data-action="select" ${selectedIds.has(task.id) ? "checked" : ""} aria-label="選択" />`
+    : `<button class="drag-handle" data-drag aria-label="ドラッグして並び替え" title="ドラッグで並び替え">⠿</button>`;
+
   return `
-    <div class="task-card pri-${tier} ${doneCls}" data-id="${esc(task.id)}">
+    <div class="task-card pri-${tier} ${doneCls} ${pinnedCls} ${selCls}" data-id="${esc(task.id)}">
+      ${lead}
       <input type="checkbox" class="task-check" data-action="toggle" ${task.status === "done" ? "checked" : ""} aria-label="完了切り替え" />
       <div class="task-main">
         <div class="task-title">${esc(task.title)}</div>
@@ -465,6 +504,7 @@ function taskCardHTML(task, pri) {
         <div class="pri-score"><small>優先度</small>${pri.score}</div>
         <div class="pri-breakdown">締切 ${pri.urgency} ／ 手軽さ ${pri.quickness}</div>
         <div class="task-actions">
+          <button class="link-btn pin-btn ${task.pinned ? "is-on" : ""}" data-action="pin-toggle" aria-label="至急">${task.pinned ? "🔥 解除" : "🔥 至急"}</button>
           <button class="link-btn move-btn" data-action="move-up" aria-label="上へ移動">↑</button>
           <button class="link-btn move-btn" data-action="move-down" aria-label="下へ移動">↓</button>
           <button class="link-btn" data-action="decompose">分解</button>
@@ -608,6 +648,9 @@ function openTaskModal(taskId, presetGoalId, prefill) {
       <label for="f-title">タスク名 *</label>
       <input type="text" id="f-title" value="${esc(task ? task.title : (prefill && prefill.title ? prefill.title : ""))}" placeholder="例）企画書をレビューする" />
     </div>
+    <div class="field field-check">
+      <label class="check-label"><input type="checkbox" id="f-pinned" ${(task ? task.pinned : (prefill && prefill.pinned)) ? "checked" : ""} /> 🔥 至急（リストの一番上に固定する）</label>
+    </div>
     <div class="field">
       <label for="f-goal">紐づける目標（やりたいこと）</label>
       <select id="f-goal">${goalOptions}</select>
@@ -694,19 +737,25 @@ function saveTask(taskId, prefill) {
   const effort = effortRaw ? Math.max(0, Math.round(Number(effortRaw))) : null;
   const status = document.getElementById("f-status").value;
   const note = document.getElementById("f-note").value.trim();
+  const pinned = document.getElementById("f-pinned").checked;
 
   if (taskId) {
     const t = state.tasks.find((x) => x.id === taskId);
     const wasDone = t.status === "done";
-    Object.assign(t, { title, goalId, deadline, effort, status, note });
+    const wasPinned = !!t.pinned;
+    Object.assign(t, { title, goalId, deadline, effort, status, note, pinned });
+    if (pinned && !wasPinned) { t.pinnedAt = Date.now(); pinToFront(t.id); }
     if (status === "done" && !wasDone) t.completedAt = Date.now();
     if (status !== "done") t.completedAt = null;
   } else {
+    const id = uid();
     state.tasks.push({
-      id: uid(), goalId, title, deadline, effort, status, note,
+      id, goalId, title, deadline, effort, status, note, pinned,
+      pinnedAt: pinned ? Date.now() : null,
       createdAt: Date.now(),
       completedAt: status === "done" ? Date.now() : null,
     });
+    if (pinned) pinToFront(id);
   }
   // メモから変換した場合は、保存できたタイミングで元メモを削除
   if (prefill && prefill.memoId) {
@@ -815,8 +864,8 @@ function toggleTask(taskId) {
   renderAll();
 }
 
-// 手動で1つ上/下へ（dir: -1=上, +1=下）。初回は現在の並びを土台に手動モードへ
-function moveTask(id, dir) {
+// manualOrder を「今アクティブな全タスク」で初期化／補完する（手動モードへ切替も行う）
+function ensureManualOrderInitialized() {
   if (state.settings.sortMode !== "manual" || !state.manualOrder || !state.manualOrder.length) {
     state.manualOrder = orderedActiveIds(state.settings.sortMode);
     state.settings.sortMode = "manual";
@@ -827,6 +876,28 @@ function moveTask(id, dir) {
     const active = new Set(activeTasks().map((t) => t.id));
     state.manualOrder = state.manualOrder.filter((tid) => active.has(tid));
   }
+}
+
+// 至急にしたタスクを手動順でも先頭へ（手動モードで最上位に来るように）
+function pinToFront(id) {
+  if (state.manualOrder && state.manualOrder.length) {
+    state.manualOrder = [id].concat(state.manualOrder.filter((x) => x !== id));
+  }
+}
+
+// 至急のオン/オフ
+function togglePin(id) {
+  const t = state.tasks.find((x) => x.id === id);
+  if (!t) return;
+  t.pinned = !t.pinned;
+  if (t.pinned) { t.pinnedAt = Date.now(); pinToFront(id); }
+  save();
+  renderPriority();
+}
+
+// 手動で1つ上/下へ（dir: -1=上, +1=下）。初回は現在の並びを土台に手動モードへ
+function moveTask(id, dir) {
+  ensureManualOrderInitialized();
 
   // 表示中（フィルタ適用）の並びで隣を特定 → グローバルな手動順で位置を入れ替え
   const displayed = rankActive(filteredActiveTasks(), state.manualOrder).map((x) => x.task.id);
@@ -842,6 +913,99 @@ function moveTask(id, dir) {
   state.manualOrder[b] = id;
   save();
   renderPriority();
+}
+
+// ドラッグ＆ドロップ確定：表示中カードの新しい並び（DOM順）を手動順へ反映
+// フィルタで隠れているタスクの相対位置は保持する（moveTaskと同じ考え方）。
+function commitDraggedOrder(displayedNewOrder) {
+  ensureManualOrderInitialized();
+  const displayedSet = new Set(displayedNewOrder);
+  const queue = displayedNewOrder.slice();
+  // グローバル手動順を走査し、「表示中」のスロットだけ新しい順で埋め直す
+  state.manualOrder = state.manualOrder.map((id) => (displayedSet.has(id) ? queue.shift() : id));
+  // 念のため：手動順に無い表示中IDがあれば末尾へ
+  queue.forEach((id) => { if (state.manualOrder.indexOf(id) === -1) state.manualOrder.push(id); });
+  save();
+  renderPriority();
+}
+
+/* ---------- ドラッグ＆ドロップ並び替え（マウス／タッチ両対応・Pointer Events） ---------- */
+let dragState = null;
+
+function onListPointerDown(e) {
+  if (selectMode) return;                       // 選択モード中は並び替えしない
+  const handle = e.target.closest("[data-drag]");
+  if (!handle) return;
+  const card = handle.closest(".task-card");
+  const list = document.getElementById("priority-list");
+  if (!card || !list) return;
+  e.preventDefault();
+
+  dragState = { card, list, handle, pointerId: e.pointerId };
+  card.classList.add("dragging");
+  try { handle.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+  handle.addEventListener("pointermove", onListPointerMove);
+  handle.addEventListener("pointerup", onListPointerUp);
+  handle.addEventListener("pointercancel", onListPointerUp);
+}
+
+function onListPointerMove(e) {
+  if (!dragState) return;
+  e.preventDefault();
+  const { card, list } = dragState;
+  const y = e.clientY;
+  const others = Array.prototype.slice.call(list.querySelectorAll(".task-card:not(.dragging)"));
+  let insertBefore = null;
+  for (const c of others) {
+    const r = c.getBoundingClientRect();
+    if (y < r.top + r.height / 2) { insertBefore = c; break; }
+  }
+  if (insertBefore) list.insertBefore(card, insertBefore);
+  else list.appendChild(card);
+}
+
+function onListPointerUp() {
+  if (!dragState) return;
+  const { card, list, handle, pointerId } = dragState;
+  card.classList.remove("dragging");
+  try { handle.releasePointerCapture(pointerId); } catch (_) { /* ignore */ }
+  handle.removeEventListener("pointermove", onListPointerMove);
+  handle.removeEventListener("pointerup", onListPointerUp);
+  handle.removeEventListener("pointercancel", onListPointerUp);
+  dragState = null;
+
+  const domIds = Array.prototype.slice.call(list.querySelectorAll(".task-card")).map((c) => c.dataset.id);
+  commitDraggedOrder(domIds);
+}
+
+/* ---------- まとめて選択（一括削除） ---------- */
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  selectedIds.clear();
+  renderPriority();
+}
+function toggleSelect(id) {
+  if (selectedIds.has(id)) selectedIds.delete(id);
+  else selectedIds.add(id);
+  renderPriority();
+}
+function selectAllDisplayed() {
+  filteredActiveTasks().forEach((t) => selectedIds.add(t.id));
+  renderPriority();
+}
+function clearSelection() {
+  selectedIds.clear();
+  renderPriority();
+}
+function bulkDeleteSelected() {
+  if (!selectedIds.size) return;
+  if (!confirm(`選択した ${selectedIds.size} 件のタスクを削除しますか？`)) return;
+  state.tasks = state.tasks.filter((t) => !selectedIds.has(t.id));
+  if (state.manualOrder) state.manualOrder = state.manualOrder.filter((id) => !selectedIds.has(id));
+  selectedIds.clear();
+  selectMode = false;
+  save();
+  renderAll();
 }
 
 function memoToTask(memoId) {
@@ -889,6 +1053,8 @@ function init() {
 
   // 追加ボタン
   document.getElementById("add-task-btn").addEventListener("click", () => openTaskModal(null, null));
+  document.getElementById("urgent-task-btn").addEventListener("click", () => openTaskModal(null, null, { pinned: true }));
+  document.getElementById("select-btn").addEventListener("click", toggleSelectMode);
   document.getElementById("bulk-task-btn").addEventListener("click", openBulkModal);
   document.getElementById("ics-task-btn").addEventListener("click", openIcsModal);
   document.getElementById("recurring-btn").addEventListener("click", openRecurringModal);
@@ -986,6 +1152,12 @@ function init() {
       case "toggle": toggleTask(id); break;
       case "edit": openTaskModal(id); break;
       case "decompose": openDecomposeModal(id); break;
+      case "pin-toggle": togglePin(id); break;
+      case "select": toggleSelect(id); break;
+      case "select-all": selectAllDisplayed(); break;
+      case "select-clear": clearSelection(); break;
+      case "select-exit": toggleSelectMode(); break;
+      case "bulk-delete": bulkDeleteSelected(); break;
       case "move-up": moveTask(id, -1); break;
       case "move-down": moveTask(id, 1); break;
       case "focus-done": focusComplete(id); break;
@@ -1012,6 +1184,9 @@ function init() {
         break;
     }
   });
+
+  // ドラッグ＆ドロップ並び替え（優先度リスト。要素は再描画で中身のみ差し替わるので委譲で受ける）
+  document.getElementById("priority-list").addEventListener("pointerdown", onListPointerDown);
 
   // フッター
   document.getElementById("load-sample").addEventListener("click", loadSample);
