@@ -11,7 +11,7 @@
 - **技術**：**バニラ HTML/CSS/JS のみ。ビルド不要・依存ゼロ**。データは `localStorage`。サーバーなし。
 - **公開URL / 配信ブランチ**：**https://lumina-debug.github.io/web-application/**（GitHub Pages）。**配信元は `claude/funny-tesla-bk7f0g`＝これが本番・正本ブランチ**。セッションごとに作られる作業ブランチ（例 `claude/account-linking-auto-sync-mdirkh`）の成果は、**最終的に funny-tesla に反映（fast-forward）して公開する**こと。ユーザーは funny-tesla を「元のブランチ」として認識している。
 - **作業の進め方**：各セッションの作業ブランチは funny-tesla を土台に作成 → 作業 → **funny-tesla へ反映してプッシュ**（＝サイト更新）。**PRはユーザーが明示的に頼むまで作らない**。
-- **直近の実装**：**アカウント連携＆自動同期**（Firebase Auth/Google ＋ Firestore）＋ **JSON 書き出し/取り込み**（§8）／**至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え**（§11）。同期の実接続テストはユーザーが Firebase を用意後に行う。
+- **直近の実装**：**アカウント連携＆自動同期**（Firebase Auth/Google ＋ **Realtime Database**）＋ **JSON 書き出し/取り込み**（§8）／**至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え**（§11）。同期の実接続テストはユーザーが Firebase を用意後に行う。**Firestore ではなく Realtime Database を採用**（Firestore は新規作成に課金/請求先が必要なことがあるため。RTDBは無料Sparkのままカード登録不要）。
 - **次にやること候補**：CSV エクスポート、議事録→タスク抽出、定例レポート自動生成 など。
 - **ローカル実行**：`python -m http.server 8000` → `http://localhost:8000`。
   - AIの「直接依頼」は **CORSの都合で `http://localhost`（HTTPS）でのみ動作**。`file://` では不可（コピペ方式は可）。
@@ -25,9 +25,9 @@
 index.html          画面構造（タブ、モーダルの共通シェル、PWAタグ）
 styles.css          見た目（CSS変数。末尾にモバイル用 @media (max-width:560px)）
 app.js              すべてのロジック（約2000行・単一ファイル。フレームワーク不使用）
-sync.js             クラウド同期（Firebase Auth/Google ＋ Firestore）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合
+sync.js             クラウド同期（Firebase Auth/Google ＋ Realtime Database）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合
 manifest.json       PWA マニフェスト
-sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v3"）
+sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v4"）
 icons/              icon-192.png / icon-512.png / icon-180.png（優先度リストのモチーフ）
 start-dandori.vbs   Windows自動起動用（サーバーを隠れて起動しブラウザで開く）
 start-dandori.bat   同上（ウィンドウ表示版）
@@ -167,12 +167,12 @@ state = {
 ### 実装したもの
 - **JSON 書き出し / 取り込み**（app.js）：フッターの「📤 書き出し」「📥 取り込み」。`exportData()` / `importDataFromFile(file)`。取り込みは `tasks` 配列の有無で妥当性チェックし、確認の上 `Dandori.applyExternalState(obj, {notify:true, touch:true})` で全置換（最新扱い＝ログイン中ならクラウドへも反映）。**APIキーは含まれない**。
 - **Firebase 同期**（`sync.js`、`<script type="module">`）：
-  - **Auth**：Google ログイン（`signInWithPopup`）。既定の local 永続でセッションは自動復元。
-  - **Firestore**：`users/{uid}` に state 全体を1ドキュメントで保存。`persistentLocalCache`（多タブ）でオフライン永続、失敗時は `getFirestore` にフォールバック。
-  - **CDN 動的import**：`https://www.gstatic.com/firebasejs/10.12.5/firebase-{app,auth,firestore}.js` を必要時に import（静的構成維持、app.js は据え置き）。
-  - **last-write-wins**：ログイン時に remote を取得し `updatedAt` 比較→新しい方を採用（remoteが新→`applyExternalState(notify:false)`、localが新→push、無ければ初回push）。以後 `onSnapshot` でリアルタイム購読＋ローカル変更を `schedulePush()`（1.2s デバウンス）で push。
-  - **エコー防止**：自分の書き込みは `snapshot.metadata.hasPendingWrites` と `updatedAt` 比較でスキップ。外部反映中は app.js 側 `suppressSaveNotify` で再push抑止。
-  - **設定**：`firebaseConfig` は同期パネルの設定UIから入力し `localStorage["dandori.firebaseConfig"]` に端末ローカル保存（6項目を個別入力。eval不使用）。手順とセキュリティルールもパネル内に表示。
+  - **Auth**：Google ログイン。`signInWithPopup` → 失敗（popup/blocked/cancelled/operation-not-supported）時は自動で `signInWithRedirect` にフォールバック（iOSのホーム画面アプリ対策）。`getRedirectResult` で戻りを回収。既定の local 永続でセッション自動復元。
+  - **Realtime Database**：`users/{uid}` に state 全体を1ノードで保存（`ref/get/set/onValue`）。オフラインは localStorage 側で担保（web版RTDBのディスク永続はモバイル限定のため未使用。再接続時に onValue が発火）。
+  - **CDN 動的import**：`https://www.gstatic.com/firebasejs/10.12.5/firebase-{app,auth,database}.js` を必要時に import（静的構成維持、app.js は据え置き）。
+  - **last-write-wins**：ログイン時に remote を `get` し `updatedAt` 比較→新しい方を採用（remoteが新→`applyExternalState(notify:false)`、localが新→push、無ければ初回push）。以後 `onValue` でリアルタイム購読＋ローカル変更を `schedulePush()`（1.2s デバウンス）で push。
+  - **エコー防止**：自分の書き込みは remote.updatedAt が local と同値になるので `remote.updatedAt > local` 条件で自然にスキップ。外部反映中は app.js 側 `suppressSaveNotify` で再push抑止。
+  - **設定**：`firebaseConfig` は同期パネルの設定UIから入力し `localStorage["dandori.firebaseConfig"]` に端末ローカル保存（`databaseURL` を含む7項目を個別入力。eval不使用）。手順とセキュリティルールもパネル内に表示。将来的にコードへハードコードすれば端末ごとの入力は不要（config は公開前提の値）。
 - **app.js ブリッジ `window.Dandori`**：`getState()` / `getStateJSON()` / `getUpdatedAt()` / `applyExternalState(obj,{notify,touch})` / `onSave(cb)`。sync.js はこれ経由で疎結合（app.js は Firebase を知らない）。
 
 ### UI
@@ -180,11 +180,14 @@ state = {
 - sync.js が独自モーダル（既存 `.modal-overlay`/`.modal` クラス流用）を生成：未設定→設定フォーム、設定済み未ログイン→Googleログイン、ログイン中→アカウント表示＋ログアウト。
 
 ### ユーザー側の準備（パネル内にも記載）
-1. Firebaseプロジェクト作成（無料）→ 2. Authentication で Google 有効化 → 3. Firestore 作成 → 4. ウェブアプリ登録→ `firebaseConfig` を同期パネルに入力 → 5. Firestore ルールを本人限定（`request.auth.uid == userId`）→ 6.（公開URLなら）承認済みドメイン追加。
+1. Firebaseプロジェクト作成（無料）→ 2. Authentication で Google 有効化 → 3. **Realtime Database** 作成（ロックモード。※Firestoreではない）→ 4. ウェブアプリ登録→ `firebaseConfig`（`databaseURL` 含む）を同期パネルに入力 → 5. RTDB ルールを本人限定（`".read"/".write": "$uid === auth.uid"`）→ 6.（公開URLなら）承認済みドメインに `lumina-debug.github.io` を追加。
+- **マルチユーザー**：1プロジェクトを全員で共有。各自が自分の Google でログイン→ `users/{自分のuid}` に隔離保存（他人のデータはルールで不可視）。他ユーザーは設定入力不要（＝将来 config をハードコードすれば「ログインだけ」になる）。
 
 ### 留意点 / TODO
-- 実接続は未検証（Firebase未作成のため）。ログイン後の往復同期はユーザー環境での確認待ち。
-- 競合は last-write-wins（フィールド単位マージはしない＝1人利用前提）。複数端末で同時編集すると後勝ち。
+- 実接続は未検証（ユーザーが Firebase 用意後に確認）。ログイン後の往復同期はユーザー環境での確認待ち。
+- 競合は last-write-wins（フィールド単位マージはしない）。複数端末で同時編集すると後勝ち。
+- Firestore ではなく **Realtime Database** を採用（Firestore は新規作成に課金/請求先が必要なことがあるため。RTDB は無料Sparkのまま・カード登録不要）。
+- 次アクション候補：ユーザーから firebaseConfig を受領したら **コードにハードコード**して端末ごとの設定入力を廃止。
 - SW は別オリジン（CDN）に介入しない設計のまま（OK）。`sync.js` 自体は同一オリジンなので `dandori-v3` に追加済み。
 
 ---

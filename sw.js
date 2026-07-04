@@ -1,5 +1,5 @@
 /* 段取り（Dandori）Service Worker — オフライン対応（アプリ本体をキャッシュ） */
-const CACHE = "dandori-v3";
+const CACHE = "dandori-v4";
 const ASSETS = [
   "./",
   "./index.html",

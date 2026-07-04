@@ -2,12 +2,17 @@
 
 /* =========================================================
  * 段取り（Dandori） — クラウド同期モジュール
- *   Firebase Authentication（Googleログイン）＋ Firestore で
+ *   Firebase Authentication（Googleログイン）＋ Realtime Database で
  *   複数端末のデータを自動同期する。
+ *
+ *   ※ Realtime Database を採用（Firestore は新規作成に課金/請求先が
+ *      必要になるケースがあるため）。Realtime Database は無料の Spark
+ *      プランのまま・請求先登録なしで使える。
  *
  *   - 同期対象は app.js の state（tasks/goals/memos/recurring/
  *     settings/manualOrder など）。APIキーは state に含まれない
  *     ため、この同期・書き出しには一切混ざらない。
+ *   - 保存先は users/{uid} に state を1ノード丸ごと。ルールで本人限定。
  *   - 競合は last-write-wins（state.updatedAt で新しい方を採用）。
  *   - 静的PWAのまま動かすため、Firebase は gstatic の ESM CDN を
  *     必要時に動的 import する（app.js は据え置き／疎結合）。
@@ -22,6 +27,7 @@ const CONFIG_KEY = "dandori.firebaseConfig"; // 端末ローカル（state と�
 const CONFIG_FIELDS = [
   { key: "apiKey", required: true },
   { key: "authDomain", required: true },
+  { key: "databaseURL", required: true },   // Realtime Database のURL（…firebaseio.com / …firebasedatabase.app）
   { key: "projectId", required: true },
   { key: "storageBucket", required: false },
   { key: "messagingSenderId", required: false },
@@ -34,7 +40,7 @@ function loadConfig() {
     const raw = localStorage.getItem(CONFIG_KEY);
     if (!raw) return null;
     const cfg = JSON.parse(raw);
-    if (cfg && cfg.apiKey && cfg.projectId && cfg.appId) return cfg;
+    if (cfg && cfg.apiKey && cfg.databaseURL && cfg.appId) return cfg;
   } catch (e) { /* ignore */ }
   return null;
 }
@@ -44,10 +50,10 @@ function saveConfig(cfg) {
 function hasConfig() { return !!loadConfig(); }
 
 /* ---------- 状態 ---------- */
-let fb = null;            // { app, auth, db, ...authFns, ...fsFns }
+let fb = null;            // { app, auth, db, ...authFns, ...dbFns }
 let initPromise = null;
 let currentUser = null;
-let unsubSnapshot = null;
+let unsubSnapshot = null;  // onValue の購読解除関数
 let pushTimer = null;
 
 /* ---------- Firebase 初期化（必要時に CDN から動的 import） ---------- */
@@ -56,24 +62,18 @@ function ensureFirebase() {
   initPromise = (async () => {
     const cfg = loadConfig();
     if (!cfg) throw new Error("Firebaseの設定がありません。");
-    const [appMod, authMod, fsMod] = await Promise.all([
+    const [appMod, authMod, dbMod] = await Promise.all([
       import(BASE + "firebase-app.js"),
       import(BASE + "firebase-auth.js"),
-      import(BASE + "firebase-firestore.js"),
+      import(BASE + "firebase-database.js"),
     ]);
     const app = appMod.initializeApp(cfg);
     const auth = authMod.getAuth(app);
-    let db;
-    try {
-      db = fsMod.initializeFirestore(app, {
-        localCache: fsMod.persistentLocalCache({ tabManager: fsMod.persistentMultipleTabManager() }),
-      });
-    } catch (e) {
-      // オフライン永続が使えない環境（プライベートブラウズ等）はメモリで継続
-      db = fsMod.getFirestore(app);
-    }
-    fb = Object.assign({ app, auth, db }, authMod, fsMod);
+    const db = dbMod.getDatabase(app);
+    fb = Object.assign({ app, auth, db }, authMod, dbMod);
     fb.onAuthStateChanged(auth, onAuth);
+    // リダイレクト方式ログインの戻り（iOS PWA等）を回収。認証結果は onAuth が受ける
+    fb.getRedirectResult(auth).catch((e) => setStatus("ログインに失敗：" + errMsg(e), true));
     return fb;
   })();
   initPromise.catch(() => { initPromise = null; }); // 失敗時は再試行できるように
@@ -88,15 +88,15 @@ async function onAuth(user) {
   updateFooter();
   if (!user) return;
 
-  const ref = fb.doc(fb.db, "users", user.uid);
+  const userRef = fb.ref(fb.db, "users/" + user.uid);
 
   // 初回マージ（last-write-wins）
   try {
-    const snap = await fb.getDoc(ref);
+    const snap = await fb.get(userRef);
     const local = window.Dandori.getUpdatedAt();
     if (snap.exists()) {
-      const remote = snap.data();
-      const rT = remote.updatedAt || 0;
+      const remote = snap.val();
+      const rT = (remote && remote.updatedAt) || 0;
       if (rT > local) {
         window.Dandori.applyExternalState(remote, { notify: false });
         setStatus("クラウドのデータを反映しました（" + timeNow() + "）");
@@ -112,13 +112,13 @@ async function onAuth(user) {
     setStatus("初回同期に失敗：" + errMsg(e), true);
   }
 
-  // リアルタイム購読（他端末の変更を自動反映）
-  unsubSnapshot = fb.onSnapshot(ref,
+  // リアルタイム購読（他端末の変更を自動反映）。onValue はunsubscribe関数を返す
+  unsubSnapshot = fb.onValue(userRef,
     (s) => {
-      if (s.metadata && s.metadata.hasPendingWrites) return; // 自分の書き込みは無視
       if (!s.exists()) return;
-      const remote = s.data();
-      if ((remote.updatedAt || 0) > window.Dandori.getUpdatedAt()) {
+      const remote = s.val();
+      // 自分の書き込みは updatedAt が同じなので下の条件で自然にスキップされる
+      if ((remote && remote.updatedAt || 0) > window.Dandori.getUpdatedAt()) {
         window.Dandori.applyExternalState(remote, { notify: false });
         setStatus("他の端末の変更を反映（" + timeNow() + "）");
       }
@@ -131,8 +131,8 @@ async function onAuth(user) {
 async function pushNow() {
   if (!fb || !currentUser) return;
   try {
-    const data = JSON.parse(window.Dandori.getStateJSON());
-    await fb.setDoc(fb.doc(fb.db, "users", currentUser.uid), data);
+    const data = JSON.parse(window.Dandori.getStateJSON()); // undefined を除去
+    await fb.set(fb.ref(fb.db, "users/" + currentUser.uid), data);
     setStatus("保存しました（" + timeNow() + "）");
   } catch (e) {
     setStatus("クラウド保存に失敗：" + errMsg(e), true);
@@ -148,9 +148,21 @@ function schedulePush() {
 async function login() {
   try {
     await ensureFirebase();
-    const provider = new fb.GoogleAuthProvider();
+  } catch (e) {
+    setStatus("初期化に失敗：" + errMsg(e), true);
+    alert("Firebaseの初期化に失敗しました。設定値を確認してください。\n" + errMsg(e));
+    return;
+  }
+  const provider = new fb.GoogleAuthProvider();
+  try {
     await fb.signInWithPopup(fb.auth, provider);
   } catch (e) {
+    const code = (e && e.code) || "";
+    // ポップアップが使えない環境（iOSのホーム画面アプリ等）はリダイレクトで再試行
+    if (/popup|cancelled|blocked|operation-not-supported/i.test(code)) {
+      setStatus("ポップアップが使えないため画面遷移でログインします…");
+      try { await fb.signInWithRedirect(fb.auth, provider); return; } catch (e2) { e = e2; }
+    }
     setStatus("ログインに失敗：" + errMsg(e), true);
     alert("ログインに失敗しました。\n" + errMsg(e));
   }
@@ -219,12 +231,15 @@ function renderPanel() {
 /* ---- 設定（firebaseConfig 入力） ---- */
 function setupHTML() {
   const cfg = loadConfig() || {};
+  // Realtime Database のセキュリティルール（本人だけが自分のデータを読み書き）
   const rules =
-    "rules_version = '2';\n" +
-    "service cloud.firestore {\n" +
-    "  match /databases/{database}/documents {\n" +
-    "    match /users/{userId} {\n" +
-    "      allow read, write: if request.auth != null && request.auth.uid == userId;\n" +
+    "{\n" +
+    "  \"rules\": {\n" +
+    "    \"users\": {\n" +
+    "      \"$uid\": {\n" +
+    "        \".read\": \"$uid === auth.uid\",\n" +
+    "        \".write\": \"$uid === auth.uid\"\n" +
+    "      }\n" +
     "    }\n" +
     "  }\n" +
     "}";
@@ -236,14 +251,14 @@ function setupHTML() {
   ).join("");
 
   return '' +
-    '<p class="sync-sub">複数端末で自動同期するには Firebase の設定が必要です（無料枠で利用できます）。下の値はこのブラウザにのみ保存され、クラウドには送られません。</p>' +
+    '<p class="sync-sub">複数端末で自動同期するには Firebase の設定が必要です（<b>Realtime Database</b> を使うので無料・請求先登録なしで利用できます）。下の値はこのブラウザにのみ保存され、クラウドには送られません。</p>' +
     '<details class="sync-help"><summary>準備の手順（初回のみ）</summary>' +
       '<ol class="sync-steps">' +
         '<li><a href="https://console.firebase.google.com/" target="_blank" rel="noopener">Firebase Console</a> でプロジェクトを作成</li>' +
         '<li>「Authentication」→「Sign-in method」で <b>Google</b> を有効化</li>' +
-        '<li>「Firestore Database」を作成（本番モードでOK）</li>' +
-        '<li>「プロジェクトの設定」→「マイアプリ」で <b>ウェブアプリ（&lt;/&gt;）</b> を追加し、表示される <code>firebaseConfig</code> の各値を下に貼り付け</li>' +
-        '<li>Firestore の「ルール」を下記に置き換えて公開（本人だけが読み書き）</li>' +
+        '<li>「<b>Realtime Database</b>」を作成（ロケーションを選び、<b>ロックモード</b>で開始）。※「Firestore」ではありません</li>' +
+        '<li>「プロジェクトの設定」→「マイアプリ」で <b>ウェブアプリ（&lt;/&gt;）</b> を追加し、表示される <code>firebaseConfig</code> の各値を下に貼り付け（<code>databaseURL</code> が含まれます）</li>' +
+        '<li>Realtime Database の「ルール」タブを下記に置き換えて公開（本人だけが読み書き）</li>' +
       '</ol>' +
       '<pre class="sync-rules">' + esc(rules) + '</pre>' +
       '<p class="sync-sub">公開URL（GitHub Pages 等）で使う場合は、Authentication →「設定」→「承認済みドメイン」にそのドメインを追加してください。</p>' +

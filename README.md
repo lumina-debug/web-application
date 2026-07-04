@@ -56,32 +56,36 @@ AIの「直接依頼」も使えるよう、ローカルサーバー（`http://l
 
 ## アカウント連携で自動同期（Firebase）
 
-Googleアカウントでログインすると、タスク・目標・メモ・設定などが**クラウド（Firestore）に保存され、複数端末で自動同期**されます。ログインしなくても、これまで通り端末内だけで利用できます。
+Googleアカウントでログインすると、タスク・目標・メモ・設定などが**クラウド（Firebase Realtime Database）に保存され、複数端末で自動同期**されます。ログインしなくても、これまで通り端末内だけで利用できます。
 
 > **APIキーは同期されません。** Claude / Gemini のAPIキーは引き続きその端末のローカルにのみ保存され、クラウドにも書き出しデータにも一切含まれません。
 
-同期には無料の Firebase プロジェクトが必要です（初回のみ・数分）。フッターの「☁️ ログイン / 同期…」を開くと、画面内に手順とコピペ用の設定欄があります。概要：
+> **Realtime Database を採用**しています。Firestore は新規データベース作成に請求先（課金）の有効化を求められる場合があるため、**無料の Spark プランのまま・カード登録なしで使える** Realtime Database にしています。
+
+同期には無料の Firebase プロジェクトが必要です（初回のみ・数分。**1つのプロジェクトを全ユーザーで共有**でき、各自は自分の Google でログインするだけ）。フッターの「☁️ ログイン / 同期…」を開くと、画面内に手順とコピペ用の設定欄があります。概要：
 
 1. [Firebase Console](https://console.firebase.google.com/) でプロジェクトを作成
 2. **Authentication → Sign-in method** で **Google** を有効化
-3. **Firestore Database** を作成
-4. **プロジェクトの設定 → マイアプリ** でウェブアプリを追加し、表示される `firebaseConfig` の値を同期パネルの設定欄に入力
-5. Firestore の**ルール**を「本人だけが読み書き」に設定：
+3. **Realtime Database** を作成（**ロックモード**で開始。※ Firestore ではありません）
+4. **プロジェクトの設定 → マイアプリ** でウェブアプリを追加し、表示される `firebaseConfig` の値（`databaseURL` を含む）を同期パネルの設定欄に入力
+5. Realtime Database の**ルール**を「本人だけが読み書き」に設定：
 
-   ```
-   rules_version = '2';
-   service cloud.firestore {
-     match /databases/{database}/documents {
-       match /users/{userId} {
-         allow read, write: if request.auth != null && request.auth.uid == userId;
+   ```json
+   {
+     "rules": {
+       "users": {
+         "$uid": {
+           ".read": "$uid === auth.uid",
+           ".write": "$uid === auth.uid"
+         }
        }
      }
    }
    ```
 
-6.（公開URLで使う場合）Authentication →「設定」→「承認済みドメイン」に公開ドメインを追加
+6.（公開URLで使う場合）Authentication →「設定」→「承認済みドメイン」に公開ドメイン（例 `lumina-debug.github.io`）を追加
 
-設定した `firebaseConfig` はその端末のlocalStorageにのみ保存されます（クラウドには送りません）。競合は **last-write-wins**（最後に保存した内容が優先）で解決します。
+設定した `firebaseConfig` はその端末のlocalStorageにのみ保存されます（クラウドには送りません）。競合は **last-write-wins**（最後に保存した内容が優先）で解決します。ログインは**ポップアップ方式**で、使えない環境（iOSのホーム画面アプリ等）では自動的に**リダイレクト方式**に切り替わります。
 
 ### 手動バックアップ / 端末間移行（JSON）
 
@@ -120,7 +124,7 @@ Googleアカウントでログインすると、タスク・目標・メモ・�
 index.html   画面構造
 styles.css   見た目
 app.js       状態管理・優先度計算・描画（バニラJS、フレームワーク不使用）
-sync.js      クラウド同期（Firebase Auth + Firestore。ESM CDNを動的import）
+sync.js      クラウド同期（Firebase Auth + Realtime Database。ESM CDNを動的import）
 ```
 
 ## 今後の発展（アイデア）
