@@ -116,33 +116,15 @@ async function onAuth(user) {
 
   const userRef = fb.ref(fb.db, "users/" + user.uid);
 
-  // 初回マージ（last-write-wins）
-  try {
-    const snap = await fb.get(userRef);
-    const local = window.Dandori.getUpdatedAt();
-    if (snap.exists()) {
-      const remote = snap.val();
-      const rT = (remote && remote.updatedAt) || 0;
-      if (rT > local) {
-        window.Dandori.applyExternalState(remote, { notify: false });
-        setStatus("クラウドのデータを反映しました（" + timeNow() + "）");
-      } else if (local > rT) {
-        await pushNow();
-      } else {
-        setStatus("同期中（" + timeNow() + "）");
-      }
-    } else {
-      await pushNow(); // 初回：今の端末のデータをクラウドへ保存
-    }
-  } catch (e) {
-    setStatus("初回同期に失敗：" + errMsg(e), true);
-  }
+  await initialSync(userRef);
 
   // リアルタイム購読（他端末の変更を自動反映）。onValue はunsubscribe関数を返す
   unsubSnapshot = fb.onValue(userRef,
     (s) => {
       if (!s.exists()) return;
       const remote = s.val();
+      // 空データで手元の中身を消さない（他端末の初期化中の空push対策）
+      if (stateIsEmpty(remote) && !localIsEmpty()) return;
       // 自分の書き込みは updatedAt が同じなので下の条件で自然にスキップされる
       if ((remote && remote.updatedAt || 0) > window.Dandori.getUpdatedAt()) {
         window.Dandori.applyExternalState(remote, { notify: false });
@@ -151,6 +133,53 @@ async function onAuth(user) {
     },
     (err) => setStatus("同期エラー：" + errMsg(err), true)
   );
+}
+
+// 初回マージ／手動同期。基本は last-write-wins（updatedAt）だが、
+// 「空データで中身のあるデータを上書きしない」ガードを最優先する。
+async function initialSync(userRef) {
+  if (!fb || !currentUser) return;
+  userRef = userRef || fb.ref(fb.db, "users/" + currentUser.uid);
+  try {
+    const snap = await fb.get(userRef);
+    const local = window.Dandori.getUpdatedAt();
+    const localEmpty = localIsEmpty();
+    if (snap.exists() && !stateIsEmpty(snap.val())) {
+      const remote = snap.val();
+      const rT = (remote && remote.updatedAt) || 0;
+      if (localEmpty || rT > local) {
+        // ローカルが空、またはクラウドが新しい → クラウドを採用（空で潰さない）
+        window.Dandori.applyExternalState(remote, { notify: false });
+        setStatus("クラウドのデータを反映しました（" + timeNow() + "）");
+      } else if (local > rT) {
+        await pushNow();
+      } else {
+        setStatus("同期済み（" + timeNow() + "）");
+      }
+    } else {
+      // クラウドが空 or 未作成
+      if (!localEmpty) {
+        await pushNow(); // この端末のデータでクラウドを初期化
+      } else {
+        setStatus("同期の準備ができました（データはまだありません）");
+      }
+    }
+  } catch (e) {
+    setStatus("同期に失敗：" + errMsg(e), true);
+  }
+}
+
+// state に実データ（タスク/目標/メモ/週タスク）が無いか
+function stateIsEmpty(s) {
+  if (!s) return true;
+  const n = (s.tasks && s.tasks.length) || 0;
+  const g = (s.goals && s.goals.length) || 0;
+  const m = (s.memos && s.memos.length) || 0;
+  const r = (s.recurring && s.recurring.length) || 0;
+  return (n + g + m + r) === 0;
+}
+function localIsEmpty() {
+  try { return stateIsEmpty(window.Dandori.getState()); } catch (e) { return true; }
 }
 
 /* ---------- クラウドへ push（ローカル変更時・デバウンス） ---------- */
@@ -187,6 +216,8 @@ async function login() {
     // ポップアップが使えない環境（iOSのホーム画面アプリ等）はリダイレクトで再試行
     if (/popup|cancelled|blocked|operation-not-supported/i.test(code)) {
       setStatus("ポップアップが使えないため画面遷移でログインします…");
+      // リダイレクト復帰後、起動時に自動でFirebase初期化→getRedirectResultを回収させる印
+      try { localStorage.setItem(SIGNED_IN_KEY, "1"); } catch (_) { /* ignore */ }
       try { await fb.signInWithRedirect(fb.auth, provider); return; } catch (e2) { e = e2; }
     }
     setStatus("ログインに失敗：" + errMsg(e), true);
@@ -358,6 +389,7 @@ function signedInHTML() {
     '<p class="sync-account">✓ <b>' + name + '</b> でログイン中</p>' +
     '<p class="sync-sub">このアプリのデータ（タスク・目標・メモ・設定など）は自動でクラウドに保存され、同じアカウントの他端末と同期されます。<b>APIキーは同期されません</b>（端末ローカルのまま）。</p>' +
     '<div class="sync-actions">' +
+      '<button id="sync-now" class="btn btn-primary">🔄 今すぐ同期</button>' +
       '<button id="sync-logout" class="btn btn-ghost">ログアウト</button>' +
       editCfgLinkHTML() +
     '</div>' +
@@ -365,6 +397,10 @@ function signedInHTML() {
 }
 function wireSignedIn(body) {
   statusEl = body.querySelector("#sync-status");
+  body.querySelector("#sync-now").addEventListener("click", async () => {
+    setStatus("同期中…");
+    await initialSync();
+  });
   body.querySelector("#sync-logout").addEventListener("click", logout);
   wireEditCfg(body);
 }
