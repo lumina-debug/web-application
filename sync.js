@@ -22,7 +22,21 @@
 
 const FB_VERSION = "10.12.5";
 const BASE = `https://www.gstatic.com/firebasejs/${FB_VERSION}/`;
-const CONFIG_KEY = "dandori.firebaseConfig"; // 端末ローカル（state とは別保存）
+const CONFIG_KEY = "dandori.firebaseConfig"; // 端末ローカルの上書き用（通常は使わない）
+const SIGNED_IN_KEY = "dandori.signedIn";    // 過去にログインした端末か（起動時に自動復元するか判断）
+
+// このアプリ専用の Firebase 設定（公開前提の値。秘密ではない）。
+// これをコードに固定してあるので、各端末は設定入力なしで「Googleでログイン」できる。
+// データ保護は Realtime Database のルール（本人のuidのみ読み書き）で担保。
+const HARDCODED_CONFIG = {
+  apiKey: "AIzaSyD1x80IfyWHceY-NaH88jqvZ77pDXKwJas",
+  authDomain: "dandori-dddf0.firebaseapp.com",
+  databaseURL: "https://dandori-dddf0-default-rtdb.firebaseio.com",
+  projectId: "dandori-dddf0",
+  storageBucket: "dandori-dddf0.firebasestorage.app",
+  messagingSenderId: "850916973828",
+  appId: "1:850916973828:web:c5ed2d5bf471e9dd4f8451",
+};
 
 const CONFIG_FIELDS = [
   { key: "apiKey", required: true },
@@ -34,15 +48,24 @@ const CONFIG_FIELDS = [
   { key: "appId", required: true },
 ];
 
-/* ---------- firebaseConfig（端末ローカル保存） ---------- */
+// ハードコードされた設定が有効か（apiKey/databaseURL/appId が埋まっているか）
+function hasHardcodedConfig() {
+  const c = HARDCODED_CONFIG;
+  return !!(c && c.apiKey && c.databaseURL && c.appId);
+}
+
+/* ---------- firebaseConfig ----------
+ * 通常はコードに固定した HARDCODED_CONFIG を使う。
+ * 万一の上書き用に localStorage の設定があればそちらを優先（開発・切替用）。 */
 function loadConfig() {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
-    if (!raw) return null;
-    const cfg = JSON.parse(raw);
-    if (cfg && cfg.apiKey && cfg.databaseURL && cfg.appId) return cfg;
+    if (raw) {
+      const cfg = JSON.parse(raw);
+      if (cfg && cfg.apiKey && cfg.databaseURL && cfg.appId) return cfg;
+    }
   } catch (e) { /* ignore */ }
-  return null;
+  return hasHardcodedConfig() ? HARDCODED_CONFIG : null;
 }
 function saveConfig(cfg) {
   try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (e) { /* ignore */ }
@@ -87,6 +110,9 @@ async function onAuth(user) {
   renderPanel();
   updateFooter();
   if (!user) return;
+
+  // 次回以降は起動時に自動でセッション復元・同期する印
+  try { localStorage.setItem(SIGNED_IN_KEY, "1"); } catch (e) { /* ignore */ }
 
   const userRef = fb.ref(fb.db, "users/" + user.uid);
 
@@ -168,6 +194,7 @@ async function login() {
   }
 }
 async function logout() {
+  try { localStorage.removeItem(SIGNED_IN_KEY); } catch (e) { /* ignore */ }
   if (!fb) return;
   if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null; }
   try { await fb.signOut(fb.auth); } catch (e) { /* ignore */ }
@@ -299,12 +326,21 @@ function wireSetup(body) {
 }
 
 /* ---- ログイン ---- */
+// ハードコード設定がある場合は「設定を変更」リンクを出さない（＝設定画面は非表示）
+function editCfgLinkHTML() {
+  return hasHardcodedConfig() ? "" : '<button id="sync-edit-cfg" class="link-btn">Firebase設定を変更</button>';
+}
+function wireEditCfg(body) {
+  const b = body.querySelector("#sync-edit-cfg");
+  if (b) b.addEventListener("click", () => { forceSetup = true; renderPanel(); });
+}
+
 function loginHTML() {
   return '' +
     '<p class="sync-sub">Googleアカウントでログインすると、この端末のデータがクラウドに保存され、他の端末と自動で同期されます。</p>' +
     '<div class="sync-actions">' +
       '<button id="sync-login" class="btn btn-primary">Googleでログイン</button>' +
-      '<button id="sync-edit-cfg" class="link-btn">Firebase設定を変更</button>' +
+      editCfgLinkHTML() +
     '</div>' +
     '<p class="sync-status" id="sync-status"></p>' +
     '<p class="sync-sub">※ ログインしなくても、これまで通り端末内（localStorage）だけで利用できます。APIキーは同期されません。</p>';
@@ -312,7 +348,7 @@ function loginHTML() {
 function wireLogin(body) {
   statusEl = body.querySelector("#sync-status");
   body.querySelector("#sync-login").addEventListener("click", login);
-  body.querySelector("#sync-edit-cfg").addEventListener("click", () => { forceSetup = true; renderPanel(); });
+  wireEditCfg(body);
 }
 
 /* ---- ログイン中 ---- */
@@ -323,14 +359,14 @@ function signedInHTML() {
     '<p class="sync-sub">このアプリのデータ（タスク・目標・メモ・設定など）は自動でクラウドに保存され、同じアカウントの他端末と同期されます。<b>APIキーは同期されません</b>（端末ローカルのまま）。</p>' +
     '<div class="sync-actions">' +
       '<button id="sync-logout" class="btn btn-ghost">ログアウト</button>' +
-      '<button id="sync-edit-cfg" class="link-btn">Firebase設定を変更</button>' +
+      editCfgLinkHTML() +
     '</div>' +
     '<p class="sync-status" id="sync-status"></p>';
 }
 function wireSignedIn(body) {
   statusEl = body.querySelector("#sync-status");
   body.querySelector("#sync-logout").addEventListener("click", logout);
-  body.querySelector("#sync-edit-cfg").addEventListener("click", () => { forceSetup = true; renderPanel(); });
+  wireEditCfg(body);
 }
 
 /* ---- ステータス表示（パネル内＋フッター） ---- */
@@ -364,8 +400,11 @@ function start() {
   if (btn) btn.addEventListener("click", openPanel);
   // ローカル変更をクラウドへ反映（デバウンス）
   if (window.Dandori && window.Dandori.onSave) window.Dandori.onSave(schedulePush);
-  // 設定済みなら裏で初期化し、前回のログインを自動復元
-  if (hasConfig()) ensureFirebase().catch(() => { /* パネルを開いたときに案内 */ });
+  // 過去にログインした端末だけ、起動時に裏で初期化してセッションを自動復元する。
+  // （未ログインの人に毎回 Firebase SDK を読み込ませないための最適化）
+  let signedBefore = false;
+  try { signedBefore = !!localStorage.getItem(SIGNED_IN_KEY); } catch (e) { /* ignore */ }
+  if (hasConfig() && signedBefore) ensureFirebase().catch(() => { /* パネルを開いたときに案内 */ });
 }
 
 if (document.readyState === "loading") {

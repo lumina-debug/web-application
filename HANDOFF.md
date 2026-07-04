@@ -172,7 +172,8 @@ state = {
   - **CDN 動的import**：`https://www.gstatic.com/firebasejs/10.12.5/firebase-{app,auth,database}.js` を必要時に import（静的構成維持、app.js は据え置き）。
   - **last-write-wins**：ログイン時に remote を `get` し `updatedAt` 比較→新しい方を採用（remoteが新→`applyExternalState(notify:false)`、localが新→push、無ければ初回push）。以後 `onValue` でリアルタイム購読＋ローカル変更を `schedulePush()`（1.2s デバウンス）で push。
   - **エコー防止**：自分の書き込みは remote.updatedAt が local と同値になるので `remote.updatedAt > local` 条件で自然にスキップ。外部反映中は app.js 側 `suppressSaveNotify` で再push抑止。
-  - **設定**：`firebaseConfig` は同期パネルの設定UIから入力し `localStorage["dandori.firebaseConfig"]` に端末ローカル保存（`databaseURL` を含む7項目を個別入力。eval不使用）。手順とセキュリティルールもパネル内に表示。将来的にコードへハードコードすれば端末ごとの入力は不要（config は公開前提の値）。
+  - **設定（現状）**：`firebaseConfig` は `sync.js` の **`HARDCODED_CONFIG` にコード固定済み**（プロジェクト `dandori-dddf0`。config は公開前提の値で秘密ではない）。よって**各端末は設定入力なしで「Googleでログイン」だけ**。設定入力フォーム・「設定を変更」リンクは `hasHardcodedConfig()` が真のとき非表示（`setupHTML`/`wireSetup` はフォールバックとして残置。`localStorage["dandori.firebaseConfig"]` があればそれを優先＝開発時の上書き用）。
+  - **起動時の自動復元**：過去にログインした端末のみ（`localStorage["dandori.signedIn"]`）起動時に `ensureFirebase()` してセッション復元＋同期。未ログインの人には Firebase SDK を読み込ませない最適化。ログアウトでフラグ削除。
 - **app.js ブリッジ `window.Dandori`**：`getState()` / `getStateJSON()` / `getUpdatedAt()` / `applyExternalState(obj,{notify,touch})` / `onSave(cb)`。sync.js はこれ経由で疎結合（app.js は Firebase を知らない）。
 
 ### UI
