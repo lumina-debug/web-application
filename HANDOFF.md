@@ -9,10 +9,15 @@
 
 - **何のアプリ**：個人向けのタスク優先度ボード「段取り（Dandori）」。日本語UI。
 - **技術**：**バニラ HTML/CSS/JS のみ。ビルド不要・依存ゼロ**。データは `localStorage`。サーバーなし。
-- **公開URL / 配信ブランチ**：**https://lumina-debug.github.io/web-application/**（GitHub Pages）。**配信元は `claude/funny-tesla-bk7f0g`＝これが本番・正本ブランチ**。セッションごとに作られる作業ブランチ（例 `claude/account-linking-auto-sync-mdirkh`）の成果は、**最終的に funny-tesla に反映（fast-forward）して公開する**こと。ユーザーは funny-tesla を「元のブランチ」として認識している。
-- **作業の進め方**：各セッションの作業ブランチは funny-tesla を土台に作成 → 作業 → **funny-tesla へ反映してプッシュ**（＝サイト更新）。**PRはユーザーが明示的に頼むまで作らない**。
-- **直近の実装**：**アカウント連携＆自動同期**（Firebase Auth/Google ＋ **Realtime Database**）＋ **JSON 書き出し/取り込み**（§8）／**至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え**（§11）。同期の実接続テストはユーザーが Firebase を用意後に行う。**Firestore ではなく Realtime Database を採用**（Firestore は新規作成に課金/請求先が必要なことがあるため。RTDBは無料Sparkのままカード登録不要）。
-- **次にやること候補**：CSV エクスポート、議事録→タスク抽出、定例レポート自動生成 など。
+- **⚠️ PUSH先＝`claude/funny-tesla-bk7f0g`（本番・正本ブランチ）**：公開URL **https://lumina-debug.github.io/web-application/**（GitHub Pages）の**配信元がこの funny-tesla ブランチ**。つまり **funny-tesla に push するとサイトが更新される**。ユーザーは funny-tesla を「元のブランチ」と呼ぶ。
+  - セッションごとに指定される作業ブランチ（例 `claude/account-linking-auto-sync-mdirkh`）でまず作業してよいが、**必ず最後に funny-tesla へ反映（fast-forward）して push すること**。反映しないと公開サイトに出ない。運用は §7 参照。**今は両ブランチとも同一コミットを指している**。
+  - **PRはユーザーが明示的に頼むまで作らない**。
+- **直近の実装（本番稼働中）**：
+  - **アカウント連携＆自動同期**（Firebase Auth/Google ＋ **Realtime Database**）… **実接続・複数端末同期まで動作確認済み**（PC↔スマホでタスクが同期）。詳細 §8。
+  - **JSON 書き出し/取り込み**（端末間の手動移行・バックアップ）。
+  - **至急タスクの先頭固定・まとめて選択（一括削除）・ドラッグ&ドロップ並び替え**（§11）。
+- **同期の要点**：**Firestore ではなく Realtime Database**（Firestore は新規作成に課金/請求先が必要になり詰まったため）。**`firebaseConfig` は sync.js に固定済み**（`HARDCODED_CONFIG`、プロジェクト `dandori-dddf0`）→ 各端末は**設定入力なしで「Googleでログイン」だけ**。変更は自動同期（編集でpush・onValueでpull）。
+- **次にやること候補**：CSV エクスポート、議事録→タスク抽出、定例レポート自動生成、同期の競合対策強化（現状 last-write-wins）など。
 - **ローカル実行**：`python -m http.server 8000` → `http://localhost:8000`。
   - AIの「直接依頼」は **CORSの都合で `http://localhost`（HTTPS）でのみ動作**。`file://` では不可（コピペ方式は可）。
 - **検証のしかた**：`node --check app.js` / `node --check sw.js`、`manifest.json` は `JSON.parse` で妥当性確認。ロジックは Node で小さく再現テスト（これまでもそうしてきた）。
@@ -27,7 +32,7 @@ styles.css          見た目（CSS変数。末尾にモバイル用 @media (max
 app.js              すべてのロジック（約2000行・単一ファイル。フレームワーク不使用）
 sync.js             クラウド同期（Firebase Auth/Google ＋ Realtime Database）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合
 manifest.json       PWA マニフェスト
-sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v4"）
+sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v7"。sync.js もキャッシュ対象）
 icons/              icon-192.png / icon-512.png / icon-180.png（優先度リストのモチーフ）
 start-dandori.vbs   Windows自動起動用（サーバーを隠れて起動しブラウザで開く）
 start-dandori.bat   同上（ウィンドウ表示版）
@@ -58,7 +63,8 @@ state = {
 - `task.deadline` は `"YYYY-MM-DD"` か `null`。`task.effort` は分（整数）か `null`。
 - `task.status` は `"todo" | "doing" | "done"`。
 - **APIキーは state とは別保存**：`localStorage["dandori.apiKey"]`（Claude）/ `localStorage["dandori.geminiKey"]`（Gemini）。
-  **意図的に state に入れていない**（同期・書き出しに混ぜないため）。同様に **`firebaseConfig` も別保存**：`localStorage["dandori.firebaseConfig"]`（端末ローカルのみ・クラウドへは送らない）。
+  **意図的に state に入れていない**（同期・書き出しに混ぜないため）。
+- **同期関連の localStorage（state とは別）**：`dandori.firebaseConfig`（通常は未使用の上書き用。本番は sync.js の `HARDCODED_CONFIG` を使う）／`dandori.signedIn`（過去にログインした端末か＝起動時に自動復元するかの印）。いずれもクラウドへは送らない。
 - `save()` は毎回 `state.updatedAt = Date.now()` を打ち、ローカル変更を `saveListeners`（=sync.js）へ通知する。外部反映（取り込み/クラウド）中は `suppressSaveNotify` で通知を止めてエコー（再push）を防ぐ。
 
 ---
@@ -137,7 +143,7 @@ state = {
 
 - `index.html` に manifest / theme-color / apple-touch-icon / SW登録あり。
 - `sw.js` は **ネットワーク優先**（オンラインは常に最新→キャッシュ更新、オフライン時のみキャッシュ）。**外部API（別オリジン）には介入しない**。
-- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v2"`）。
+- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v7"`。同期系を変えた時は毎回上げてきた）。
 - iPhoneのホーム画面アプリは、更新反映に**Safariで一度リロード／アプリ再起動**が要ることがある。
 
 ---
@@ -153,16 +159,28 @@ state = {
 ## 7. 開発・公開のワークフロー
 
 - ローカル確認：`python -m http.server 8000` → `http://localhost:8000`（直接依頼を試すならこれ。`file://`不可）。
-- 変更後の検証（最低限）：`node --check app.js`、`node --check sw.js`、`node -e 'JSON.parse(require("fs").readFileSync("manifest.json","utf8"))'`。ロジックはNodeで小テスト。
-- コミット：日本語メッセージ。これまでは末尾に `https://claude.ai/code/session_...` を付与（新セッションのものに置き換え）。
-- プッシュ：`git push -u origin claude/funny-tesla-bk7f0g`（失敗時のみ指数バックオフで最大4回）。
-- スマホ公開：GitHub Pages（Settings→Pages→該当ブランチ＋ /root）または Netlify/Cloudflare Pages。HTTPSで配信→「ホーム画面に追加」。
+- 変更後の検証（最低限）：`node --check app.js`、`node --check sync.js`（ESMなので `.mjs` にコピーしてから、または `node --input-type=module --check`）、`node --check sw.js`、`node -e 'JSON.parse(require("fs").readFileSync("manifest.json","utf8"))'`。UIは Playwright（グローバル導入済み: `/opt/node22/lib/node_modules/playwright`、Chromium: `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`）で `http://localhost:8000` を開いてスモークテストしてきた。
+- コミット：日本語メッセージ。末尾に Co-Authored-By とセッションURL（新セッションのものに置き換え）。
+- **プッシュ先（重要）**：
+  1. まず作業ブランチへ push（`git push -u origin <作業ブランチ>`）。
+  2. **公開するため `claude/funny-tesla-bk7f0g` に反映して push**：
+     ```
+     git branch -f claude/funny-tesla-bk7f0g <HEAD>
+     git push origin claude/funny-tesla-bk7f0g
+     ```
+     （作業ブランチは funny-tesla を土台にしているので基本 fast-forward。失敗時のみ指数バックオフで最大4回リトライ）
+  3. **funny-tesla に push すると GitHub Pages が自動で再ビルド＆デプロイ**して公開サイトが更新される。
+- **⚠️ Pages デプロイが一時失敗することがある**：ビルド成果物は正常でも deploy ステップが「Deployment failed, try again later.」で落ちる GitHub 側の一時障害を実際に2回連続で踏んだ（サイトが数版古いまま止まる）。**push 後は Pages ビルドの成否を必ず確認**すること。
+  - 確認：GitHub MCP `mcp__github__actions_list`（`method:list_workflow_runs`, `branch:claude/funny-tesla-bk7f0g`）で「pages build and deployment」の conclusion を見る（出力が大きいので `python -c` でJSONパースして絞る）。失敗ログは `mcp__github__get_job_logs`（`failed_only:true, return_content:true`）。
+  - 復旧：**新規コミットを1つ積んで push**すると新しいビルドが走り直る（SW の `CACHE` 版数を上げるのが一石二鳥＝クライアント更新も促す）。ワークフローの再実行（`actions_run_trigger` の `rerun_workflow_run`）は Pages の動的ワークフローでは queued のまま進まないことがあった。
+  - 反映確認：`WebFetch` で `…/sync.js?v=<sha>`（クエリでキャッシュ回避）を取り、狙った内容が出ているか確認。
+- スマホ公開：既に設定済み（Pages 配信元 = funny-tesla）。HTTPSで配信 →「ホーム画面に追加」。**更新が古い時は iPhone アプリを終了→再起動、または Safari で一度リロード**。
 
 ---
 
-## 8. アカウント連携＆自動同期（実装済み）
+## 8. アカウント連携＆自動同期（本番稼働中）
 
-§8 は実装完了。**実接続テストはユーザーが Firebase プロジェクトを作って `firebaseConfig` を設定後に行う**（コードはブラウザでのロード/ブリッジ/UI/書き出しまで Playwright で検証済み）。
+§8 は完了し、**PC↔スマホでの実同期まで動作確認済み**。Firebase プロジェクト `dandori-dddf0`（Realtime Database）を使用、`firebaseConfig` は sync.js に固定済みなので**各端末は設定入力なしで「Googleでログイン」だけ**。変更は自動同期される。
 
 ### 実装したもの
 - **JSON 書き出し / 取り込み**（app.js）：フッターの「📤 書き出し」「📥 取り込み」。`exportData()` / `importDataFromFile(file)`。取り込みは `tasks` 配列の有無で妥当性チェックし、確認の上 `Dandori.applyExternalState(obj, {notify:true, touch:true})` で全置換（最新扱い＝ログイン中ならクラウドへも反映）。**APIキーは含まれない**。
@@ -170,26 +188,32 @@ state = {
   - **Auth**：Google ログイン。`signInWithPopup` → 失敗（popup/blocked/cancelled/operation-not-supported）時は自動で `signInWithRedirect` にフォールバック（iOSのホーム画面アプリ対策）。`getRedirectResult` で戻りを回収。既定の local 永続でセッション自動復元。
   - **Realtime Database**：`users/{uid}` に state 全体を1ノードで保存（`ref/get/set/onValue`）。オフラインは localStorage 側で担保（web版RTDBのディスク永続はモバイル限定のため未使用。再接続時に onValue が発火）。
   - **CDN 動的import**：`https://www.gstatic.com/firebasejs/10.12.5/firebase-{app,auth,database}.js` を必要時に import（静的構成維持、app.js は据え置き）。
-  - **last-write-wins**：ログイン時に remote を `get` し `updatedAt` 比較→新しい方を採用（remoteが新→`applyExternalState(notify:false)`、localが新→push、無ければ初回push）。以後 `onValue` でリアルタイム購読＋ローカル変更を `schedulePush()`（1.2s デバウンス）で push。
-  - **エコー防止**：自分の書き込みは remote.updatedAt が local と同値になるので `remote.updatedAt > local` 条件で自然にスキップ。外部反映中は app.js 側 `suppressSaveNotify` で再push抑止。
-  - **設定（現状）**：`firebaseConfig` は `sync.js` の **`HARDCODED_CONFIG` にコード固定済み**（プロジェクト `dandori-dddf0`。config は公開前提の値で秘密ではない）。よって**各端末は設定入力なしで「Googleでログイン」だけ**。設定入力フォーム・「設定を変更」リンクは `hasHardcodedConfig()` が真のとき非表示（`setupHTML`/`wireSetup` はフォールバックとして残置。`localStorage["dandori.firebaseConfig"]` があればそれを優先＝開発時の上書き用）。
-  - **起動時の自動復元**：過去にログインした端末のみ（`localStorage["dandori.signedIn"]`）起動時に `ensureFirebase()` してセッション復元＋同期。未ログインの人には Firebase SDK を読み込ませない最適化。ログアウトでフラグ削除。
+  - **自動同期（双方向）**：
+    - **push**：`window.Dandori.onSave(schedulePush)` 登録済み。ローカル編集で `save()`→`schedulePush()`（1.2sデバウンス）→`pushNow()`（`set(users/{uid}, state)`）。**背面化/離脱時フラッシュ**：`visibilitychange`(hidden)/`pagehide` で `flushPush()` し、編集直後に閉じても取りこぼさない。
+    - **pull**：`onValue` でリアルタイム購読。remote 変更を自動反映。
+  - **初回マージ `initialSync(userRef)`**：`get` して `stateIsEmpty()`/`updatedAt` で判定。**空データ保護を最優先**（ローカルが空→クラウド採用／クラウドが空→ローカルをpush／両方中身あり→updatedAtのlast-write-wins）。`onValue` 側も「空リモートで手元の中身を消さない」ガードあり。パネルの「🔄 今すぐ同期（予備）」も `initialSync()` を呼ぶ。
+  - **エコー防止**：自分の書き込みは remote.updatedAt が local と同値になるので `remote.updatedAt > local` で自然にスキップ。外部反映中は app.js 側 `suppressSaveNotify` で再push抑止。
+  - **設定はコード固定**：`sync.js` の **`HARDCODED_CONFIG`**（プロジェクト `dandori-dddf0`。config は公開前提の値で秘密ではない）。設定入力フォーム・「設定を変更」リンクは `hasHardcodedConfig()` が真のとき非表示（`editCfgLinkHTML()`）。`setupHTML`/`wireSetup` はフォールバックとして残置。`localStorage["dandori.firebaseConfig"]` があればそれを優先（開発時の上書き用）。
+  - **ログイン**：`signInWithPopup`→失敗時 `signInWithRedirect`（iOS PWA対策）。リダイレクト開始時に `dandori.signedIn` を立て、復帰後の起動で自動 `ensureFirebase()`→`getRedirectResult` 回収→ログイン完了。
+  - **起動時の自動復元**：`dandori.signedIn` がある端末のみ起動時に `ensureFirebase()`（未ログインの人には Firebase SDK を読み込ませない最適化）。ログアウトでフラグ削除。
 - **app.js ブリッジ `window.Dandori`**：`getState()` / `getStateJSON()` / `getUpdatedAt()` / `applyExternalState(obj,{notify,touch})` / `onSave(cb)`。sync.js はこれ経由で疎結合（app.js は Firebase を知らない）。
 
 ### UI
 - フッターに「☁️ ログイン / 同期…」ボタン（`#sync-btn`）＋ ログイン中の状態表示（`#sync-state`）。
-- sync.js が独自モーダル（既存 `.modal-overlay`/`.modal` クラス流用）を生成：未設定→設定フォーム、設定済み未ログイン→Googleログイン、ログイン中→アカウント表示＋ログアウト。
+- sync.js が独自モーダル（既存 `.modal-overlay`/`.modal` クラス流用）を生成：（config固定済みなので通常は）未ログイン→Googleログイン、ログイン中→「✅ 自動同期オン」表示＋ログアウト＋「🔄 今すぐ同期（予備）」。
 
-### ユーザー側の準備（パネル内にも記載）
-1. Firebaseプロジェクト作成（無料）→ 2. Authentication で Google 有効化 → 3. **Realtime Database** 作成（ロックモード。※Firestoreではない）→ 4. ウェブアプリ登録→ `firebaseConfig`（`databaseURL` 含む）を同期パネルに入力 → 5. RTDB ルールを本人限定（`".read"/".write": "$uid === auth.uid"`）→ 6.（公開URLなら）承認済みドメインに `lumina-debug.github.io` を追加。
-- **マルチユーザー**：1プロジェクトを全員で共有。各自が自分の Google でログイン→ `users/{自分のuid}` に隔離保存（他人のデータはルールで不可視）。他ユーザーは設定入力不要（＝将来 config をハードコードすれば「ログインだけ」になる）。
+### Firebase 側の設定（設定済み・参考）
+- プロジェクト `dandori-dddf0`。Authentication で Google 有効。承認済みドメインに `lumina-debug.github.io` 追加済み。
+- **Realtime Database**（Firestore ではない）。ルールは本人限定：
+  ```json
+  { "rules": { "users": { "$uid": { ".read": "$uid === auth.uid", ".write": "$uid === auth.uid" } } } }
+  ```
+- **マルチユーザー**：1プロジェクトを全員で共有。各自が自分の Google でログイン→ `users/{自分のuid}` に隔離保存（他人のデータはルールで不可視）。他ユーザーは設定入力不要（ログインするだけ）。config を差し替えて自分のFirebaseにしたい場合は `HARDCODED_CONFIG` を書き換える。
 
 ### 留意点 / TODO
-- 実接続は未検証（ユーザーが Firebase 用意後に確認）。ログイン後の往復同期はユーザー環境での確認待ち。
-- 競合は last-write-wins（フィールド単位マージはしない）。複数端末で同時編集すると後勝ち。
-- Firestore ではなく **Realtime Database** を採用（Firestore は新規作成に課金/請求先が必要なことがあるため。RTDB は無料Sparkのまま・カード登録不要）。
-- 次アクション候補：ユーザーから firebaseConfig を受領したら **コードにハードコード**して端末ごとの設定入力を廃止。
-- SW は別オリジン（CDN）に介入しない設計のまま（OK）。`sync.js` 自体は同一オリジンなので `dandori-v3` に追加済み。
+- 競合は **last-write-wins**（フィールド単位マージはしない）。別々の端末で別々に編集すると後勝ち。空データでの上書きは保護済みだが、非空どうしの競合は未対策 → 強化候補（タスクid単位マージ／競合時の確認UI）。
+- Firestore ではなく **Realtime Database** を採用（Firestore は新規作成に課金/請求先が必要で詰まったため。RTDB は無料Sparkのまま・カード登録不要）。
+- `apiKey` 等をコードに公開しているが Firebase の正規運用（秘密ではない）。保護は Auth＋RTDBルールで担保。気になれば承認済みドメイン限定等で追加ロック可。
 
 ---
 
@@ -205,8 +229,8 @@ state = {
 
 ## 10. これまでの主な変更履歴（ブランチのコミット要旨）
 
-MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemini対応 → まとめて入力 → JSON解析堅牢化 → タスク分解 → 手動並び替え → 集中モード → 週タスク → Windows自動起動 → PWA化 → SWネットワーク優先 → iOSモーダル改善 → ヘッダー保存ボタン → **JSON書き出し/取り込み＋Firebaseアカウント連携・自動同期** → **至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え**。
-（`git log --oneline` で詳細確認）
+MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemini対応 → まとめて入力 → JSON解析堅牢化 → タスク分解 → 手動並び替え → 集中モード → 週タスク → Windows自動起動 → PWA化 → SWネットワーク優先 → iOSモーダル改善 → ヘッダー保存ボタン → **JSON書き出し/取り込み＋Firebaseアカウント連携・自動同期** → **至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え** → **同期をFirestore→Realtime Databaseへ変更** → **firebaseConfigをコード固定・設定画面廃止** → **同期堅牢化（空データ保護・リダイレクト復帰・閉じる前フラッシュ・今すぐ同期ボタン・自動同期の明示）**。
+（`git log --oneline` で詳細確認。公開は §7 のとおり funny-tesla に反映して行う）
 
 ---
 
