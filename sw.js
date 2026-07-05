@@ -1,11 +1,12 @@
 /* 段取り（Dandori）Service Worker — オフライン対応（アプリ本体をキャッシュ） */
-const CACHE = "dandori-v7";
+const CACHE = "dandori-v8";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
   "./sync.js",
+  "./gcal.js",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

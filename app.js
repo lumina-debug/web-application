@@ -108,6 +108,9 @@ const Dandori = {
 
   // ローカル変更が保存されるたびに呼ばれるコールバックを登録
   onSave(cb) { if (typeof cb === "function") saveListeners.push(cb); },
+
+  // タスクの優先度スコア（gcal.js が週間予定表の割り当て順の決定に使用）
+  priorityOf: (t) => priorityOf(t),
 };
 window.Dandori = Dandori;
 

@@ -13,6 +13,7 @@
   - セッションごとに指定される作業ブランチ（例 `claude/account-linking-auto-sync-mdirkh`）でまず作業してよいが、**必ず最後に funny-tesla へ反映（fast-forward）して push すること**。反映しないと公開サイトに出ない。運用は §7 参照。**今は両ブランチとも同一コミットを指している**。
   - **PRはユーザーが明示的に頼むまで作らない**。
 - **直近の実装（本番稼働中）**：
+  - **週間予定表 → Google カレンダー登録**（`gcal.js`）… タスクを週の空き時間に自動割り当てて、アプリ内の週カレンダーでプレビュー・調整し、Google Calendar API で本人のカレンダーへ登録。**初回のみ Google Cloud Console で Calendar API の有効化が必要**。詳細 §12。
   - **アカウント連携＆自動同期**（Firebase Auth/Google ＋ **Realtime Database**）… **実接続・複数端末同期まで動作確認済み**（PC↔スマホでタスクが同期）。詳細 §8。
   - **JSON 書き出し/取り込み**（端末間の手動移行・バックアップ）。
   - **至急タスクの先頭固定・まとめて選択（一括削除）・ドラッグ&ドロップ並び替え**（§11）。
@@ -30,9 +31,10 @@
 index.html          画面構造（タブ、モーダルの共通シェル、PWAタグ）
 styles.css          見た目（CSS変数。末尾にモバイル用 @media (max-width:560px)）
 app.js              すべてのロジック（約2000行・単一ファイル。フレームワーク不使用）
-sync.js             クラウド同期（Firebase Auth/Google ＋ Realtime Database）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合
+sync.js             クラウド同期（Firebase Auth/Google ＋ Realtime Database）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合。Googleアクセストークン取得ブリッジ window.DandoriCloud も提供（§12）
+gcal.js             週間予定表（タスクの空き時間割り当て → Google カレンダー登録 / .ics 保存）。通常script・IIFE。詳細 §12
 manifest.json       PWA マニフェスト
-sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v7"。sync.js もキャッシュ対象）
+sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v8"。sync.js / gcal.js もキャッシュ対象）
 icons/              icon-192.png / icon-512.png / icon-180.png（優先度リストのモチーフ）
 start-dandori.vbs   Windows自動起動用（サーバーを隠れて起動しブラウザで開く）
 start-dandori.bat   同上（ウィンドウ表示版）
@@ -143,7 +145,7 @@ state = {
 
 - `index.html` に manifest / theme-color / apple-touch-icon / SW登録あり。
 - `sw.js` は **ネットワーク優先**（オンラインは常に最新→キャッシュ更新、オフライン時のみキャッシュ）。**外部API（別オリジン）には介入しない**。
-- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v7"`。同期系を変えた時は毎回上げてきた）。
+- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v8"`。同期系を変えた時は毎回上げてきた）。
 - iPhoneのホーム画面アプリは、更新反映に**Safariで一度リロード／アプリ再起動**が要ることがある。
 
 ---
@@ -229,7 +231,7 @@ state = {
 
 ## 10. これまでの主な変更履歴（ブランチのコミット要旨）
 
-MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemini対応 → まとめて入力 → JSON解析堅牢化 → タスク分解 → 手動並び替え → 集中モード → 週タスク → Windows自動起動 → PWA化 → SWネットワーク優先 → iOSモーダル改善 → ヘッダー保存ボタン → **JSON書き出し/取り込み＋Firebaseアカウント連携・自動同期** → **至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え** → **同期をFirestore→Realtime Databaseへ変更** → **firebaseConfigをコード固定・設定画面廃止** → **同期堅牢化（空データ保護・リダイレクト復帰・閉じる前フラッシュ・今すぐ同期ボタン・自動同期の明示）**。
+MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemini対応 → まとめて入力 → JSON解析堅牢化 → タスク分解 → 手動並び替え → 集中モード → 週タスク → Windows自動起動 → PWA化 → SWネットワーク優先 → iOSモーダル改善 → ヘッダー保存ボタン → **JSON書き出し/取り込み＋Firebaseアカウント連携・自動同期** → **至急タスクの先頭固定・まとめて選択・ドラッグ&ドロップ並び替え** → **同期をFirestore→Realtime Databaseへ変更** → **firebaseConfigをコード固定・設定画面廃止** → **同期堅牢化（空データ保護・リダイレクト復帰・閉じる前フラッシュ・今すぐ同期ボタン・自動同期の明示）** → **週間予定表（タスクを空き時間へ自動割り当て→Googleカレンダー登録、gcal.js・§12）**。
 （`git log --oneline` で詳細確認。公開は §7 のとおり funny-tesla に反映して行う）
 
 ---
@@ -240,3 +242,26 @@ MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemin
 - **まとめて選択**：`selectMode` / `selectedIds`（非永続）。「☑️ 選択」で切替。カードに `.select-check`、上部に `.bulk-bar`（すべて選択/選択解除/削除/終了）。`bulkDeleteSelected()` が一括削除。
 - **ドラッグ&ドロップ**：`.drag-handle`（⠿）を Pointer Events で掴む（`onListPointerDown/Move/Up`、`#priority-list` に委譲）。マウス/タッチ両対応（handleに `touch-action:none`）。ドロップで DOM順を `commitDraggedOrder()` が手動順へ反映＋手動モードへ。フィルタで隠れたタスクの相対位置は保持。
 - 手動順の初期化は `ensureManualOrderInitialized()` に共通化（`moveTask` と共用）。
+
+---
+
+## 12. 週間予定表 → Google カレンダー（gcal.js）
+
+優先度ビューの「📆 週間予定」ボタン → 専用モーダル（sync.js と同様に独自 overlay を生成、`.modal-wide`）。
+
+### 流れ（3ステップ）
+1. **その週の予定を取り込む**：「📥 Googleカレンダーから読み込む」（primary カレンダーの events.list、終日・transparent は空き扱い）＋ **手入力** textarea（1行1件：`7/7 13:00-14:00 定例会議` / `金 18:00-19:00 送迎`。曜日はその週の日付に読み替え。`parseBusyLines()`）。
+2. **タスクを選んで自動割り当て**：未完了タスクをチェックで選択（既定は全選択）→「🧮 空き時間に自動割り当て」。`computePlan()` が **至急 → 締切が近い → 優先度スコア**（`window.Dandori.priorityOf` ブリッジ）順に、稼働時間帯（既定 9:00–18:00、平日のみ・土日オプション）の**早い空きスロット（15分刻み）**へ詰める。所要 = `effort`（見積なしは既定60分・変更可）。入りきらない分は理由付きで表示。締切超過・予定との重なりは行に ⚠ 警告（`recomputeWarns()`）。
+3. **週間予定表**：アプリ内の週カレンダー（`renderCalendar()`。グレー=GCal予定、青=手入力、紫=タスク、横スクロール対応）＋行エディタ（日・開始時刻・所要・含む/外すを編集可能）→「**📤 Googleカレンダーへ登録**」（events.insert を1件ずつ、成功行は ✅・失敗行はエラー表示）／「**📥 .icsで保存**」（API不要のフォールバック）。
+
+### 認証（sync.js の window.DandoriCloud ブリッジ）
+- `getGoogleToken(scope)`：Firebase Auth の Google プロバイダに **scope `calendar.events` を追加**して `reauthenticateWithPopup`（未ログインなら `signInWithPopup`）→ `credentialFromResult().accessToken` を取得。**sessionStorage `dandori.gtoken` に約55分キャッシュ**。期限切れ・権限不足（401/403 insufficient）はトークンを破棄して再取得を促す。
+- **ポップアップ不可（iOSホーム画面アプリ等）**：`REDIRECT_REQUIRED` エラー → gcal.js が作業状態を `dandori.gcalPending` に保存してから `signInWithRedirect`。復帰後の起動時に sync.js の `getRedirectResult` がトークンを保管し、gcal.js が **pending を復元してモーダルを再表示→続きを自動実行**（`resumePending()`）。
+- 稼働時間帯などの設定は `dandori.gcalPrefs`（端末ローカル）。
+
+### ⚠ Google 側の初回設定（未実施なら必要・ユーザー作業）
+1. **Google Calendar API の有効化**（1回だけ）：https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project=dandori-dddf0 → 「有効にする」。未有効だと登録時に 403（モーダル内ヘルプにも記載）。
+2. 同意画面で**「このアプリは確認されていません」**が出たら「詳細」→「移動」で続行可。**ブロック**される場合は OAuth 同意画面（テストモード）の**テストユーザー**に自分の Gmail を追加。
+
+### 検証
+- ロジック（parseBusyLines / computePlan / ics / RFC3339）は Node + vm スタブで再現テスト済み。UI は Playwright スモーク（モーダル表示・手入力パース・割り当て3件・行編集・.ics ダウンロード・モバイル幅）で確認済み。**実際の Google API 呼び出し（読み込み/登録）は本番ドメインで人間の動作確認が必要**。

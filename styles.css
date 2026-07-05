@@ -365,7 +365,7 @@ body {
 .modal-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 20px; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: var(--surface);
+  position: sticky; top: 0; background: var(--surface); z-index: 5;
 }
 .modal-header h2 { margin: 0; font-size: 17px; }
 .modal-header-actions { display: flex; align-items: center; gap: 8px; }
@@ -525,6 +525,75 @@ body {
 .rec-form-head { font-weight: 600; color: var(--text-soft); font-size: 14px; margin-bottom: 12px; }
 .weekday-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .wd-btn { min-width: 38px; text-align: center; }
+
+/* ===== 週間予定表（gcal.js） ===== */
+.modal.modal-wide { max-width: 860px; }
+.gcal-opts { display: flex; flex-wrap: wrap; gap: 0 20px; align-items: flex-end; }
+.gcal-hours { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.gcal-hours input[type="time"] { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.gcal-chk { display: inline-flex !important; align-items: center; gap: 5px; font-size: 13px; font-weight: 400 !important; margin: 0 0 0 8px !important; color: var(--text-soft); }
+.gcal-step { margin: 18px 0 8px; font-size: 15px; color: var(--text); }
+.gcal-task-list {
+  max-height: 200px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 10px; margin-bottom: 4px; background: var(--surface);
+}
+.gcal-task-item { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 14px; cursor: pointer; }
+.gcal-task-item .meta { color: var(--text-faint); font-size: 12px; }
+.gcal-row {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 14px;
+}
+.gcal-row.is-done { opacity: 0.65; }
+.gcal-row-title { flex: 1 1 160px; min-width: 120px; }
+.gcal-row select, .gcal-row input[type="time"], .gcal-row input[type="number"] {
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-size: 13px;
+}
+.gcal-dur { width: 66px; }
+.gcal-unit { font-size: 12px; color: var(--text-soft); }
+.gcal-warn { color: var(--pri-mid); font-size: 12px; flex-basis: 100%; }
+.gcal-err { color: var(--danger); font-size: 12px; flex-basis: 100%; }
+.gcal-unplaced { font-size: 13px; color: var(--text-soft); margin: 10px 0; }
+.gcal-unplaced ul { margin: 6px 0; padding-left: 20px; }
+/* 週カレンダー */
+.gcal-cal-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.gcal-cal-grid { display: flex; min-width: 640px; }
+.gcal-col { flex: 1 1 0; min-width: 86px; border-left: 1px solid var(--border); }
+.gcal-col.gcal-axis { flex: 0 0 44px; min-width: 44px; border-left: none; }
+.gcal-col.is-today .gcal-col-head { background: var(--accent-soft); color: var(--accent); }
+.gcal-col-head {
+  font-size: 12px; font-weight: 600; text-align: center; padding: 6px 2px;
+  border-bottom: 1px solid var(--border); color: var(--text-soft);
+  position: sticky; top: 0; background: var(--surface); z-index: 2;
+}
+.gcal-allday {
+  font-size: 10px; font-weight: 400; color: var(--text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gcal-col-body {
+  position: relative;
+  background: repeating-linear-gradient(to bottom, var(--border) 0 1px, transparent 1px 44px);
+}
+.gcal-hour-label {
+  position: absolute; right: 4px; transform: translateY(-6px);
+  font-size: 10px; color: var(--text-faint);
+}
+.gcal-block {
+  position: absolute; left: 2px; right: 2px;
+  border-radius: 4px; padding: 2px 4px; overflow: hidden;
+  font-size: 10px; line-height: 1.25; box-sizing: border-box;
+}
+.gcal-block.b-busy { background: #e4e7ec; color: var(--text-soft); border: 1px solid #d3d8e0; }
+.gcal-block.b-busy.b-free { opacity: 0.5; border-style: dashed; }
+.gcal-block.b-manual { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.gcal-block.b-task { left: 26%; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); z-index: 1; }
+.gcal-block.b-task.is-warn { background: var(--pri-mid-bg); color: var(--pri-mid); border-color: var(--pri-mid); }
+.gcal-block.b-task.is-done { background: var(--pri-low-bg); color: var(--pri-low); border-color: var(--pri-low); }
+.gcal-legend { font-size: 12px; color: var(--text-soft); margin: 6px 0 2px; }
+.gcal-legend .lg { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
+.gcal-legend .lg-busy { background: #e4e7ec; border: 1px solid #d3d8e0; }
+.gcal-legend .lg-manual { background: #dbeafe; border: 1px solid #bfdbfe; }
+.gcal-legend .lg-task { background: var(--accent-soft); border: 1px solid var(--accent); }
 
 /* ===== Responsive ===== */
 @media (max-width: 560px) {

@@ -95,8 +95,15 @@ function ensureFirebase() {
     const db = dbMod.getDatabase(app);
     fb = Object.assign({ app, auth, db }, authMod, dbMod);
     fb.onAuthStateChanged(auth, onAuth);
-    // リダイレクト方式ログインの戻り（iOS PWA等）を回収。認証結果は onAuth が受ける
-    fb.getRedirectResult(auth).catch((e) => setStatus("ログインに失敗：" + errMsg(e), true));
+    // リダイレクト方式ログインの戻り（iOS PWA等）を回収。認証結果は onAuth が受ける。
+    // Google のアクセストークンが取れた場合は保管（gcal.js のカレンダー登録で使う）
+    fb.getRedirectResult(auth)
+      .then((res) => {
+        if (!res) return;
+        const cred = fb.GoogleAuthProvider.credentialFromResult(res);
+        if (cred && cred.accessToken) stashGoogleToken(cred.accessToken);
+      })
+      .catch((e) => setStatus("ログインに失敗：" + errMsg(e), true));
     return fb;
   })();
   initPromise.catch(() => { initPromise = null; }); // 失敗時は再試行できるように
@@ -237,6 +244,73 @@ async function logout() {
   if (unsubSnapshot) { unsubSnapshot(); unsubSnapshot = null; }
   try { await fb.signOut(fb.auth); } catch (e) { /* ignore */ }
 }
+
+/* =========================================================
+ * Google アクセストークン（追加スコープ用）
+ *   gcal.js（週間予定表→Googleカレンダー登録）が使う。
+ *   Firebase Auth の Google ログインに追加スコープを付けて
+ *   OAuth アクセストークンを取得する。トークンは短命（約1時間）
+ *   なので sessionStorage に期限付きで保管し、切れたら再取得。
+ * ======================================================= */
+const GTOKEN_KEY = "dandori.gtoken"; // sessionStorage: { t, exp }
+
+function stashGoogleToken(token) {
+  try {
+    sessionStorage.setItem(GTOKEN_KEY, JSON.stringify({ t: token, exp: Date.now() + 55 * 60 * 1000 }));
+  } catch (e) { /* ignore */ }
+}
+function readGoogleToken() {
+  try {
+    const o = JSON.parse(sessionStorage.getItem(GTOKEN_KEY) || "null");
+    if (o && o.t && o.exp > Date.now() + 60 * 1000) return o.t;
+  } catch (e) { /* ignore */ }
+  return null;
+}
+function clearGoogleToken() {
+  try { sessionStorage.removeItem(GTOKEN_KEY); } catch (e) { /* ignore */ }
+}
+
+// scope 付きの Google アクセストークンを取得（必要ならポップアップで同意を求める）。
+// ポップアップが使えない環境では REDIRECT_REQUIRED エラーを投げる。呼び出し側は
+// 作業状態を保存してから err.redirect() で画面遷移ログインに移ること。
+async function getGoogleToken(scope) {
+  const cached = readGoogleToken();
+  if (cached) return cached;
+  await ensureFirebase();
+  const provider = new fb.GoogleAuthProvider();
+  if (scope) provider.addScope(scope);
+  // 同期でログイン中と同じアカウントを既定にする
+  if (currentUser && currentUser.email) provider.setCustomParameters({ login_hint: currentUser.email });
+  try {
+    const res = currentUser
+      ? await fb.reauthenticateWithPopup(currentUser, provider)
+      : await fb.signInWithPopup(fb.auth, provider);
+    const cred = fb.GoogleAuthProvider.credentialFromResult(res);
+    if (cred && cred.accessToken) { stashGoogleToken(cred.accessToken); return cred.accessToken; }
+    throw new Error("アクセストークンを取得できませんでした。");
+  } catch (e) {
+    const code = (e && e.code) || "";
+    if (/popup-blocked|operation-not-supported|web-storage-unsupported/i.test(code)) {
+      const err = new Error("REDIRECT_REQUIRED");
+      err.redirectRequired = true;
+      err.redirect = async () => {
+        // 復帰後の起動で ensureFirebase → getRedirectResult がトークンを保管する
+        try { localStorage.setItem(SIGNED_IN_KEY, "1"); } catch (_) { /* ignore */ }
+        await fb.signInWithRedirect(fb.auth, provider);
+      };
+      throw err;
+    }
+    throw e;
+  }
+}
+
+// gcal.js から使う小さなブリッジ
+window.DandoriCloud = {
+  getUser: () => currentUser,
+  getGoogleToken,
+  clearGoogleToken,
+  hasCachedToken: () => !!readGoogleToken(),
+};
 
 /* =========================================================
  * UI（設定 / ログイン / 同期ステータス）
