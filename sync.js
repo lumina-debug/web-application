@@ -196,7 +196,14 @@ async function pushNow() {
 function schedulePush() {
   if (!currentUser) return;
   clearTimeout(pushTimer);
-  pushTimer = setTimeout(pushNow, 1200);
+  pushTimer = setTimeout(() => { pushTimer = null; pushNow(); }, 1200);
+}
+// 未送信の変更があれば即座に送る（アプリを閉じる／背面化する直前などに使用）
+function flushPush() {
+  if (!currentUser || !pushTimer) return;
+  clearTimeout(pushTimer);
+  pushTimer = null;
+  pushNow();
 }
 
 /* ---------- ログイン / ログアウト ---------- */
@@ -387,10 +394,10 @@ function signedInHTML() {
   const name = currentUser.displayName ? esc(currentUser.displayName) + "（" + esc(currentUser.email || "") + "）" : esc(currentUser.email || currentUser.uid);
   return '' +
     '<p class="sync-account">✓ <b>' + name + '</b> でログイン中</p>' +
-    '<p class="sync-sub">このアプリのデータ（タスク・目標・メモ・設定など）は自動でクラウドに保存され、同じアカウントの他端末と同期されます。<b>APIキーは同期されません</b>（端末ローカルのまま）。</p>' +
+    '<p class="sync-sub"><b>✅ 自動同期オン</b>：変更するたび自動でクラウドに保存され、同じアカウントの他端末にもリアルタイムで反映されます（通常、手動操作は不要）。<b>APIキーは同期されません</b>（端末ローカルのまま）。</p>' +
     '<div class="sync-actions">' +
-      '<button id="sync-now" class="btn btn-primary">🔄 今すぐ同期</button>' +
       '<button id="sync-logout" class="btn btn-ghost">ログアウト</button>' +
+      '<button id="sync-now" class="link-btn">🔄 今すぐ同期（予備）</button>' +
       editCfgLinkHTML() +
     '</div>' +
     '<p class="sync-status" id="sync-status"></p>';
@@ -434,8 +441,11 @@ function updateFooter(text) {
 function start() {
   const btn = document.getElementById("sync-btn");
   if (btn) btn.addEventListener("click", openPanel);
-  // ローカル変更をクラウドへ反映（デバウンス）
+  // ローカル変更をクラウドへ自動反映（デバウンス）
   if (window.Dandori && window.Dandori.onSave) window.Dandori.onSave(schedulePush);
+  // アプリを閉じる／背面化する直前に、未送信の変更を取りこぼさず送る
+  document.addEventListener("visibilitychange", () => { if (document.hidden) flushPush(); });
+  window.addEventListener("pagehide", flushPush);
   // 過去にログインした端末だけ、起動時に裏で初期化してセッションを自動復元する。
   // （未ログインの人に毎回 Firebase SDK を読み込ませないための最適化）
   let signedBefore = false;
