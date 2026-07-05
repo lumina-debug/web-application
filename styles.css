@@ -556,6 +556,9 @@ body {
 .gcal-unplaced { font-size: 13px; color: var(--text-soft); margin: 10px 0; }
 .gcal-unplaced ul { margin: 6px 0; padding-left: 20px; }
 /* 週カレンダー */
+.gcal-week-label { font-size: 12px; font-weight: 600; color: var(--text-soft); margin: 10px 0 4px; }
+.gcal-week-label:first-child { margin-top: 0; }
+.gcal-cal-scroll + .gcal-week-label { margin-top: 14px; }
 .gcal-cal-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
 .gcal-cal-grid { display: flex; min-width: 640px; }
 .gcal-col { flex: 1 1 0; min-width: 86px; border-left: 1px solid var(--border); }

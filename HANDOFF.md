@@ -34,7 +34,7 @@ app.js              すべてのロジック（約2000行・単一ファイル�
 sync.js             クラウド同期（Firebase Auth/Google ＋ Realtime Database）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合。Googleアクセストークン取得ブリッジ window.DandoriCloud も提供（§12）
 gcal.js             週間予定表（タスクの空き時間割り当て → Google カレンダー登録 / .ics 保存）。通常script・IIFE。詳細 §12
 manifest.json       PWA マニフェスト
-sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v8"。sync.js / gcal.js もキャッシュ対象）
+sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v9"。sync.js / gcal.js もキャッシュ対象）
 icons/              icon-192.png / icon-512.png / icon-180.png（優先度リストのモチーフ）
 start-dandori.vbs   Windows自動起動用（サーバーを隠れて起動しブラウザで開く）
 start-dandori.bat   同上（ウィンドウ表示版）
@@ -145,7 +145,7 @@ state = {
 
 - `index.html` に manifest / theme-color / apple-touch-icon / SW登録あり。
 - `sw.js` は **ネットワーク優先**（オンラインは常に最新→キャッシュ更新、オフライン時のみキャッシュ）。**外部API（別オリジン）には介入しない**。
-- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v8"`。同期系を変えた時は毎回上げてきた）。
+- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v9"`。同期系を変えた時は毎回上げてきた）。
 - iPhoneのホーム画面アプリは、更新反映に**Safariで一度リロード／アプリ再起動**が要ることがある。
 
 ---
@@ -249,10 +249,14 @@ MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemin
 
 優先度ビューの「📆 週間予定」ボタン → 専用モーダル（sync.js と同様に独自 overlay を生成、`.modal-wide`）。
 
+### 期間（1週／2週）
+- モーダル上部の「開始」（今週／来週／再来週）＋「**期間**」（1週間分／2週間分）で対象範囲を選ぶ。`prefs.spanWeeks`（端末ローカル `dandori.gcalPrefs`）。`spanWeeks()`/`spanDays()` が範囲日数を返し、Google読み込み・自動割り当て・カレンダー描画・行の日ドロップダウンすべてがこの日数で動く。
+- **2週間分のときはカレンダーを週ごとに縦積み**（`renderCalendar()` が週単位でグリッド生成、「1週目/2週目」ラベル付き）。時間軸の縦スケールは全期間で共通。
+
 ### 流れ（3ステップ）
-1. **その週の予定を取り込む**：「📥 Googleカレンダーから読み込む」（primary カレンダーの events.list、終日・transparent は空き扱い）＋ **手入力** textarea（1行1件：`7/7 13:00-14:00 定例会議` / `金 18:00-19:00 送迎`。曜日はその週の日付に読み替え。`parseBusyLines()`）。
-2. **タスクを選んで自動割り当て**：未完了タスクをチェックで選択（既定は全選択）→「🧮 空き時間に自動割り当て」。`computePlan()` が **至急 → 締切が近い → 優先度スコア**（`window.Dandori.priorityOf` ブリッジ）順に、稼働時間帯（既定 9:00–18:00、平日のみ・土日オプション）の**早い空きスロット（15分刻み）**へ詰める。所要 = `effort`（見積なしは既定60分・変更可）。入りきらない分は理由付きで表示。締切超過・予定との重なりは行に ⚠ 警告（`recomputeWarns()`）。
-3. **週間予定表**：アプリ内の週カレンダー（`renderCalendar()`。グレー=GCal予定、青=手入力、紫=タスク、横スクロール対応）＋行エディタ（日・開始時刻・所要・含む/外すを編集可能）→「**📤 Googleカレンダーへ登録**」（events.insert を1件ずつ、成功行は ✅・失敗行はエラー表示）／「**📥 .icsで保存**」（API不要のフォールバック）。
+1. **期間内の予定を取り込む**：「📥 Googleカレンダーから読み込む」（primary カレンダーの events.list、終日・transparent は空き扱い）＋ **手入力** textarea（**2週間分をまとめて入力可**。1行1件：`7/7 13:00-14:00 定例会議` / `7/14 9:00-10:00 通院`。曜日指定 `金 18:00-19:00 送迎` は**期間内で最初に来るその曜日**に読み替え＝2週目は日付で入力。`parseBusyLines()` は年なし日付を weekStart から±180日で補完）。
+2. **タスクを選んで自動割り当て**：未完了タスクをチェックで選択（既定は全選択）→「🧮 空き時間に自動割り当て」。`computePlan()` が **至急 → 締切が近い → 優先度スコア**（`window.Dandori.priorityOf` ブリッジ）順に、稼働時間帯（既定 9:00–18:00、平日のみ・土日オプション）の**早い空きスロット（15分刻み）**へ、**期間（opts.spanDays 日）全体**に渡って詰める。所要 = `effort`（見積なしは既定60分・変更可）。入りきらない分は理由付きで表示。締切超過・予定との重なりは行に ⚠ 警告（`recomputeWarns()`）。
+3. **予定表**：アプリ内カレンダー（`renderCalendar()`。グレー=GCal予定、青=手入力、紫=タスク、横スクロール対応、2週は縦積み）＋行エディタ（日=期間内全日から選択・開始時刻・所要・含む/外すを編集可能）→「**📤 Googleカレンダーへ登録**」（events.insert を1件ずつ、成功行は ✅・失敗行はエラー表示）／「**📥 .icsで保存**」（API不要のフォールバック）。
 
 ### 認証（sync.js の window.DandoriCloud ブリッジ）
 - `getGoogleToken(scope)`：Firebase Auth の Google プロバイダに **scope `calendar.events` を追加**して `reauthenticateWithPopup`（未ログインなら `signInWithPopup`）→ `credentialFromResult().accessToken` を取得。**sessionStorage `dandori.gtoken` に約55分キャッシュ**。期限切れ・権限不足（401/403 insufficient）はトークンを破棄して再取得を促す。

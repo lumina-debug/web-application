@@ -38,7 +38,9 @@
   let plan = null;           // { rows:[...], unplaced:[...] }
   let pushing = false;
 
-  function defaults() { return { workStart: "09:00", workEnd: "18:00", weekend: false, defDur: 60 }; }
+  function defaults() { return { workStart: "09:00", workEnd: "18:00", weekend: false, defDur: 60, spanWeeks: 1 }; }
+  function spanWeeks() { return prefs.spanWeeks === 2 ? 2 : 1; }
+  function spanDays() { return spanWeeks() * 7; }
   function loadPrefs() {
     try {
       const o = JSON.parse(localStorage.getItem(PREFS_KEY) || "null");
@@ -153,9 +155,9 @@
     const now = opts.now || new Date();
     const scoreFn = opts.scoreFn || prioScore;
 
-    // 稼働日ごとの空きスロットを作る
+    // 稼働日ごとの空きスロットを作る（期間 = opts.spanDays 日、既定7日）
     const days = [];
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < (opts.spanDays || 7); i++) {
       const d = addDays(opts.weekStart, i);
       const dow = d.getDay();
       if (!opts.weekend && (dow === 0 || dow === 6)) continue;
@@ -315,7 +317,7 @@
     try { token = await getToken(); }
     catch (e) { if (el) el.textContent = ""; handleAuthError(e, "load"); return; }
     try {
-      const ws = weekStartDate(), we = addDays(ws, 7);
+      const ws = weekStartDate(), we = addDays(ws, spanDays());
       const url = API + "/calendars/primary/events?" + new URLSearchParams({
         timeMin: ws.toISOString(),
         timeMax: we.toISOString(),
@@ -491,13 +493,19 @@
 
   function weekOptionsHTML() {
     const labels = ["今週", "来週", "再来週"];
+    const last = spanDays() - 1; // 期間の最終日（0始まり）
     let html = "";
     for (let i = 0; i < 3; i++) {
       const ws = addDays(mondayOf(new Date()), i * 7);
       html += '<option value="' + i + '"' + (i === weekOffset ? " selected" : "") + ">" +
-        labels[i] + "（" + mdw(ws) + "〜" + mdw(addDays(ws, 6)) + "）</option>";
+        labels[i] + (last > 6 ? "から" : "") + "（" + mdw(ws) + "〜" + mdw(addDays(ws, last)) + "）</option>";
     }
     return html;
+  }
+  function spanOptionsHTML() {
+    return [1, 2].map((n) =>
+      '<option value="' + n + '"' + (n === spanWeeks() ? " selected" : "") + ">" + n + "週間分</option>"
+    ).join("");
   }
 
   function renderBody() {
@@ -505,10 +513,11 @@
     if (!body) return;
     const durs = [30, 45, 60, 90, 120];
     body.innerHTML =
-      '<p class="sync-sub">未完了タスクをその週の空き時間に自動で割り当てて予定表を作り、Google カレンダーへ登録します（.ics 保存も可）。</p>' +
+      '<p class="sync-sub">未完了タスクを期間内の空き時間に自動で割り当てて予定表を作り、Google カレンダーへ登録します（.ics 保存も可）。<b>1週間分／2週間分</b>を選べます。</p>' +
 
       '<div class="gcal-opts">' +
-        '<div class="field"><label for="gc-week">週</label><select id="gc-week">' + weekOptionsHTML() + '</select></div>' +
+        '<div class="field"><label for="gc-week">開始</label><select id="gc-week">' + weekOptionsHTML() + '</select></div>' +
+        '<div class="field"><label for="gc-span">期間</label><select id="gc-span">' + spanOptionsHTML() + '</select></div>' +
         '<div class="field"><label>作業に使う時間帯</label><div class="gcal-hours">' +
           '<input type="time" id="gc-ws" value="' + esc(prefs.workStart) + '"> 〜 ' +
           '<input type="time" id="gc-we" value="' + esc(prefs.workEnd) + '">' +
@@ -519,13 +528,14 @@
         '</select></div>' +
       '</div>' +
 
-      '<h3 class="gcal-step">1. その週の予定を取り込む</h3>' +
+      '<h3 class="gcal-step">1. 期間内の予定を取り込む</h3>' +
       '<div class="sync-actions">' +
         '<button id="gc-load" class="btn btn-ghost">📥 Googleカレンダーから読み込む</button>' +
         '<span id="gc-load-state" class="sync-status"></span>' +
       '</div>' +
-      '<div class="field"><label for="gc-busy-text">手で追加（1行1件：「7/7 13:00-14:00 定例会議」「金 18:00-19:00 送迎」など）</label>' +
-        '<textarea id="gc-busy-text" rows="3" placeholder="7/7 13:00-14:00 定例会議">' + esc(manualText) + '</textarea>' +
+      '<div class="field"><label for="gc-busy-text">手で追加（1行1件。<b>2週間分をまとめて入力できます</b>）<br>' +
+        '例：「7/7 13:00-14:00 定例会議」「7/14 9:00-10:00 通院」。曜日指定（「金 18:00-19:00 送迎」）は<b>期間内で最初に来るその曜日</b>になります。2週目の予定は日付で入力してください。</label>' +
+        '<textarea id="gc-busy-text" rows="4" placeholder="7/7 13:00-14:00 定例会議&#10;7/14 9:00-10:00 通院">' + esc(manualText) + '</textarea>' +
         '<div id="gc-busy-err" class="sync-status is-error"></div>' +
       '</div>' +
 
@@ -536,7 +546,7 @@
         '<span id="gc-make-state" class="sync-status"></span>' +
       '</div>' +
 
-      '<h3 class="gcal-step">3. 週間予定表</h3>' +
+      '<h3 class="gcal-step">3. 予定表</h3>' +
       '<div id="gc-cal" class="gcal-cal"></div>' +
       '<div id="gc-plan-area"></div>' +
       '<p id="gc-status" class="sync-status"></p>' +
@@ -558,15 +568,26 @@
   }
 
   function wireBody() {
-    q("#gc-week").addEventListener("change", (e) => {
-      weekOffset = Number(e.target.value) || 0;
-      gcalBusy = null;   // 週が変われば予定も読み直し
+    const onRangeChange = (msgText) => {
+      gcalBusy = null;   // 期間が変われば予定も読み直し
       plan = null;       // 割り当ても作り直し
       const el = q("#gc-load-state");
-      if (el) { el.textContent = "週を変えました。必要なら読み込み直してください。"; el.classList.remove("is-error"); }
+      if (el) { el.textContent = msgText; el.classList.remove("is-error"); }
+      // 開始週の選択肢ラベルは期間で変わるので付け替える
+      const wsel = q("#gc-week");
+      if (wsel) { const v = wsel.value; wsel.innerHTML = weekOptionsHTML(); wsel.value = v; }
       applyManualText();
       renderCalendar();
       renderPlanArea();
+    };
+    q("#gc-week").addEventListener("change", (e) => {
+      weekOffset = Number(e.target.value) || 0;
+      onRangeChange("開始を変えました。必要なら読み込み直してください。");
+    });
+    q("#gc-span").addEventListener("change", (e) => {
+      prefs.spanWeeks = Number(e.target.value) === 2 ? 2 : 1;
+      savePrefs();
+      onRangeChange("期間を変えました。必要なら読み込み直してください。");
     });
     q("#gc-ws").addEventListener("change", (e) => { prefs.workStart = e.target.value || "09:00"; savePrefs(); renderCalendar(); });
     q("#gc-we").addEventListener("change", (e) => { prefs.workEnd = e.target.value || "18:00"; savePrefs(); renderCalendar(); });
@@ -639,6 +660,7 @@
     }
     plan = computePlan(tasks, {
       weekStart: weekStartDate(),
+      spanDays: spanDays(),
       workStart: prefs.workStart,
       workEnd: prefs.workEnd,
       weekend: prefs.weekend,
@@ -674,7 +696,7 @@
     if (!plan) { el.innerHTML = ""; return; }
     const ws = weekStartDate();
     const dayOpts = [];
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < spanDays(); i++) {
       const d = addDays(ws, i);
       dayOpts.push({ v: ymd(d), label: mdw(d) });
     }
@@ -709,11 +731,12 @@
     const el = q("#gc-cal");
     if (!el) return;
     const ws = weekStartDate();
-    const we = addDays(ws, 7);
+    const nWeeks = spanWeeks();
+    const we = addDays(ws, nWeeks * 7);
     const busyAll = ((gcalBusy || []).concat(manualBusy)).filter((b) => !b.allDay);
     const rows = (plan && plan.rows.filter((r) => r.include)) || [];
 
-    // 表示レンジ（分）：稼働時間帯を基本に、はみ出す予定があれば広げる
+    // 表示レンジ（分）：稼働時間帯を基本に、期間内ではみ出す予定があれば広げる
     let sMin = parseHM(prefs.workStart);
     let eMin = parseHM(prefs.workEnd);
     const consider = (s, e) => {
@@ -735,24 +758,23 @@
     const blockHTML = (top, h, cls, label, title) =>
       '<div class="gcal-block ' + cls + '" style="top:' + top.toFixed(1) + 'px;height:' + Math.max(h, 12).toFixed(1) + 'px" title="' + esc(title) + '">' + esc(label) + '</div>';
 
-    // 時刻軸
+    // 時刻軸（週ごとに再掲）
     let axis = "";
     for (let m = sMin; m <= eMin; m += 60) {
       axis += '<div class="gcal-hour-label" style="top:' + (((m - sMin) / 60) * HOUR_PX) + 'px">' + Math.floor(m / 60) + ':00</div>';
     }
-
-    const todayYmd = ymd(new Date());
-    let cols =
+    const axisCol =
       '<div class="gcal-col gcal-axis"><div class="gcal-col-head"></div>' +
       '<div class="gcal-col-body" style="height:' + bodyH + 'px">' + axis + '</div></div>';
 
-    for (let i = 0; i < 7; i++) {
-      const d = addDays(ws, i);
+    const todayYmd = ymd(new Date());
+
+    // 1日分の列を作る
+    function dayColHTML(d) {
       const d0 = new Date(d);
       const d1 = addDays(d, 1);
       const dYmd = ymd(d);
       let blocks = "";
-      // 既存の予定（グレー）
       for (const b of busyAll) {
         const s = b.start < d0 ? d0 : b.start;
         const e = b.end > d1 ? d1 : b.end;
@@ -762,7 +784,6 @@
         const label = p2(s.getHours()) + ":" + p2(s.getMinutes()) + " " + b.title;
         blocks += blockHTML(top, h, b.src === "manual" ? "b-manual" : "b-busy" + (b.free ? " b-free" : ""), label, label + (b.free ? "（空き扱い）" : ""));
       }
-      // 割り当てたタスク（紫）
       rows.forEach((r) => {
         if (r.day !== dYmd) return;
         const s = new Date(r.day + "T" + r.time + ":00");
@@ -771,18 +792,28 @@
         const label = r.time + " " + r.title;
         blocks += blockHTML(top, h, "b-task" + (r.done ? " is-done" : "") + (r.warn ? " is-warn" : ""), label, label);
       });
-      // 終日予定はヘッダー下に表示
       const allday = (gcalBusy || []).filter((b) => b.allDay && b.day === dYmd);
       const adHtml = allday.length
         ? '<div class="gcal-allday" title="' + esc(allday.map((a) => a.title).join(" / ")) + '">終日: ' + esc(allday.map((a) => a.title).join(" / ")) + '</div>'
         : "";
-      cols += '<div class="gcal-col' + (dYmd === todayYmd ? " is-today" : "") + '">' +
+      return '<div class="gcal-col' + (dYmd === todayYmd ? " is-today" : "") + '">' +
         '<div class="gcal-col-head">' + mdw(d) + adHtml + '</div>' +
         '<div class="gcal-col-body" style="height:' + bodyH + 'px">' + blocks + '</div></div>';
     }
 
-    el.innerHTML =
-      '<div class="gcal-cal-scroll"><div class="gcal-cal-grid">' + cols + '</div></div>' +
+    // 週ごとにグリッドを縦に積む（2週間分でも横に広がりすぎない）
+    let gridsHTML = "";
+    for (let w = 0; w < nWeeks; w++) {
+      const wStart = addDays(ws, w * 7);
+      let cols = axisCol;
+      for (let i = 0; i < 7; i++) cols += dayColHTML(addDays(wStart, i));
+      const wLabel = nWeeks > 1
+        ? '<div class="gcal-week-label">' + (w + 1) + '週目（' + mdw(wStart) + '〜' + mdw(addDays(wStart, 6)) + '）</div>'
+        : "";
+      gridsHTML += wLabel + '<div class="gcal-cal-scroll"><div class="gcal-cal-grid">' + cols + '</div></div>';
+    }
+
+    el.innerHTML = gridsHTML +
       '<div class="gcal-legend"><span class="lg lg-busy"></span>Googleカレンダーの予定　<span class="lg lg-manual"></span>手入力の予定　<span class="lg lg-task"></span>割り当てたタスク</div>';
   }
 
