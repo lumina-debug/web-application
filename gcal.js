@@ -30,6 +30,7 @@
   const FREE_KEY = "dandori.gcalFree";
   const PLAN_KEY = "dandori.gcalPlan";
   const PENDING_KEY = "dandori.gcalPending";
+  const CLIENTID_KEY = "dandori.gcalClientId"; // 別Googleアカウント読み込み用のOAuthクライアントID
   const STEP_MS = 15 * 60 * 1000; // 15分刻み
   const HOUR_PX = 44;             // 週表示の1時間の高さ
   const WD = ["日", "月", "火", "水", "木", "金", "土"];
@@ -46,10 +47,11 @@
   let lastUnplaced = [];                 // 直近の自動配置で入りきらなかったもの
   let selectedIds = null;                // 配置対象タスクid（null=未初期化→全選択）
   let drag = null;                       // ドラッグ中の状態
+  let gisToken = null;                   // 別アカウント読み込み時のアクセストークン {token,exp}
   let render = { startMin: 0, top: 0, cols: [] }; // 週表示の座標系（ドラッグ計算用）
 
   /* ---------- 保存/読込 ---------- */
-  function prefDefaults() { return { dayStart: "07:00", dayEnd: "22:00", defDur: 60 }; }
+  function prefDefaults() { return { dayStart: "07:00", dayEnd: "22:00", defDur: 60, otherAccount: false }; }
   function loadPrefs() {
     try { const o = JSON.parse(localStorage.getItem(PREFS_KEY) || "null"); if (o) return Object.assign(prefDefaults(), o); } catch (e) { /* ignore */ }
     return prefDefaults();
@@ -184,14 +186,66 @@
   /* =========================================================
    * Google カレンダー読み込み（閲覧のみ）
    * ======================================================= */
+  // 同期用アカウント（Firebaseログイン）でトークン取得
   async function getToken() {
     if (!window.DandoriCloud) throw new Error("同期モジュール（sync.js）が読み込まれていません。");
     return await window.DandoriCloud.getGoogleToken(SCOPE);
   }
+
+  /* ---------- 別のGoogleアカウントで読み込む（Google Identity Services） ----------
+   * 同期用アカウントとは独立して、任意のGoogleアカウントのカレンダーを閲覧するための
+   * アクセストークンを取得する。OAuthクライアントID（ウェブ）が必要（端末ローカル保存）。 */
+  function loadClientId() { try { return (localStorage.getItem(CLIENTID_KEY) || "").trim(); } catch (e) { return ""; } }
+  function saveClientId(v) { try { localStorage.setItem(CLIENTID_KEY, (v || "").trim()); } catch (e) { /* ignore */ } }
+  function loadGis() {
+    return new Promise((resolve, reject) => {
+      if (window.google && window.google.accounts && window.google.accounts.oauth2) return resolve();
+      const s = document.createElement("script");
+      s.src = "https://accounts.google.com/gsi/client"; s.async = true; s.defer = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("Google認証スクリプトの読み込みに失敗しました（ネットワークをご確認ください）。"));
+      document.head.appendChild(s);
+    });
+  }
+  function getGisToken(clientId, forceSelect) {
+    return new Promise((resolve, reject) => {
+      if (gisToken && gisToken.exp > Date.now() + 60000 && !forceSelect) return resolve(gisToken.token);
+      loadGis().then(() => {
+        const client = window.google.accounts.oauth2.initTokenClient({
+          client_id: clientId, scope: SCOPE, prompt: forceSelect ? "select_account" : "",
+          callback: (resp) => {
+            if (resp && resp.access_token) { gisToken = { token: resp.access_token, exp: Date.now() + ((resp.expires_in || 3300) * 1000) }; resolve(resp.access_token); }
+            else reject(new Error("アクセストークンを取得できませんでした。"));
+          },
+          error_callback: (err) => reject(new Error((err && (err.message || err.type)) || "認証に失敗しました。")),
+        });
+        client.requestAccessToken();
+      }).catch(reject);
+    });
+  }
+  // 読み込みに使うトークン（同期アカウント or 別アカウント）
+  async function getReadToken() {
+    if (prefs.otherAccount) {
+      const cid = loadClientId();
+      if (!cid) { const e = new Error("CLIENT_ID_REQUIRED"); e.needClientId = true; throw e; }
+      return await getGisToken(cid, !gisToken);
+    }
+    return await getToken();
+  }
+  function clearReadToken() {
+    if (prefs.otherAccount) gisToken = null;
+    else if (window.DandoriCloud) window.DandoriCloud.clearGoogleToken();
+  }
+
   function savePending() {
     try { localStorage.setItem(PENDING_KEY, JSON.stringify({ viewMode, anchor: anchor.getTime() })); } catch (e) { /* ignore */ }
   }
   function handleAuthError(e) {
+    if (e && e.needClientId) {
+      const d = q("#gc-other-setup"); if (d) d.open = true;
+      setStatus("別アカウントで読み込むには、OAuthクライアントIDの入力が必要です（下の「別アカウント設定」）。", true);
+      return;
+    }
     if (e && e.redirectRequired && typeof e.redirect === "function") {
       savePending();
       setStatus("Googleのログイン画面に移動します…");
@@ -204,10 +258,10 @@
   }
   function apiErrText(status, j) {
     const gm = (j && j.error && j.error.message) || "";
-    if (status === 401) { if (window.DandoriCloud) window.DandoriCloud.clearGoogleToken(); return "認証の有効期限が切れました（401）。もう一度お試しください。"; }
+    if (status === 401) { clearReadToken(); return "認証の有効期限が切れました（401）。もう一度お試しください。"; }
     if (status === 403) {
       if (/not been used|disabled|accessNotConfigured/i.test(gm)) return "Google Calendar API が有効になっていません（初回のみの設定。下の「うまくいかない時」参照）。";
-      if (/insufficient/i.test(gm)) { if (window.DandoriCloud) window.DandoriCloud.clearGoogleToken(); return "カレンダー閲覧の権限が足りません。もう一度押して、閲覧を許可してください。"; }
+      if (/insufficient/i.test(gm)) { clearReadToken(); return "カレンダー閲覧の権限が足りません。もう一度押して、閲覧を許可してください。"; }
       return "アクセスが拒否されました（403）：" + gm;
     }
     return "エラー（" + status + "）：" + (gm || "不明");
@@ -218,7 +272,7 @@
     const el = q("#gc-load-state");
     if (el) { el.textContent = "読み込み中…"; el.classList.remove("is-error"); }
     let token;
-    try { token = await getToken(); }
+    try { token = await getReadToken(); }
     catch (e) { if (el) el.textContent = ""; handleAuthError(e); return; }
     try {
       // 今日を含む週の頭から8週間ぶんを一括取得（週/月ナビをカバー）
@@ -332,6 +386,7 @@
       '<div class="gcal-toolbar gcal-toolbar-2">' +
         '<div class="sync-actions" style="margin:0">' +
           '<button id="gc-load" class="btn btn-ghost">📥 Google予定を読み込む</button>' +
+          '<label class="gcal-chk"><input type="checkbox" id="gc-other"' + (prefs.otherAccount ? " checked" : "") + '> 別のGoogleアカウントで読み込む</label>' +
           '<span id="gc-load-state" class="sync-status"></span>' +
         '</div>' +
         '<details class="gcal-settings"><summary>表示設定</summary>' +
@@ -344,6 +399,11 @@
           '</div>' +
         '</details>' +
       '</div>' +
+
+      '<details class="gcal-settings gcal-other-setup" id="gc-other-setup"' + (prefs.otherAccount && !loadClientId() ? " open" : "") + '><summary>別アカウント設定（初回のみ）</summary>' +
+        '<div class="gcal-hours">OAuthクライアントID <input type="text" id="gc-clientid" placeholder="xxxxx.apps.googleusercontent.com" value="' + esc(loadClientId()) + '"> <button id="gc-clientid-save" class="btn btn-ghost">保存</button></div>' +
+        '<p class="sync-sub">同期用アカウントと<b>別の</b>Googleアカウントのカレンダーを閲覧する場合だけ必要です。<a href="https://console.cloud.google.com/apis/credentials?project=dandori-dddf0" target="_blank" rel="noopener">Google Cloud Console →「認証情報」</a>の <b>OAuth 2.0 クライアント ID（ウェブ）</b> の「クライアント ID」を貼り付け、同じクライアントの「<b>承認済みの JavaScript 生成元</b>」に <code>https://lumina-debug.github.io</code> を追加してください。「読み込む」を押すとアカウントを選べます。</p>' +
+      '</details>' +
 
       '<div id="gc-cal"></div>' +
 
@@ -363,8 +423,9 @@
 
       '<details class="sync-help"><summary>うまくいかない時（初回設定・ヘルプ）</summary>' +
         '<ul class="sync-steps">' +
-          '<li><b>空き時間の作り方</b>：週表示でカレンダーの空欄を上下にドラッグ（スマホは長めにスワイプ）すると緑の枠ができます。枠をタップすると削除。月表示で日付をタップするとその週に移動します。</li>' +
+          '<li><b>空き時間の作り方</b>：週表示でカレンダーの空欄を上下にドラッグ（スマホは長めにスワイプ）すると緑の枠ができます。緑の枠は<b>ドラッグで移動・タップで削除</b>。月表示で日付をタップするとその週に移動します。</li>' +
           '<li><b>Google予定の読み込み</b>：Googleログインと<b>カレンダーの閲覧許可</b>が必要です（書き込みはしません）。初回に許可画面が出ます。</li>' +
+          '<li><b>別のGoogleアカウントで読み込む</b>：チェックを入れると、同期用とは別のアカウントのカレンダーを閲覧できます。初回のみ「別アカウント設定」でOAuthクライアントID（ウェブ）の入力＋そのクライアントの承認済みJavaScript生成元に <code>https://lumina-debug.github.io</code> の追加が必要です。</li>' +
           '<li><b>「Google Calendar API が有効になっていません」</b>：<a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project=dandori-dddf0" target="_blank" rel="noopener">Google Cloud Console</a> でプロジェクト <code>dandori-dddf0</code> の Calendar API を有効化（1回だけ）。</li>' +
           '<li><b>「このアプリは確認されていません」</b>→「詳細」→「移動」。<b>ブロック</b>される場合は OAuth 同意画面のテストユーザーに自分のGmailを追加。</li>' +
           '<li>Google予定を読み込まなくても、空き時間を手で指定すれば自動配置は使えます。</li>' +
@@ -384,6 +445,15 @@
       viewMode = b.dataset.view; afterNav();
     }));
     q("#gc-load").addEventListener("click", loadFromGoogle);
+    q("#gc-other").addEventListener("change", (e) => {
+      prefs.otherAccount = !!e.target.checked; savePrefs(); gisToken = null;
+      const d = q("#gc-other-setup"); if (prefs.otherAccount && !loadClientId() && d) d.open = true;
+      const st = q("#gc-load-state"); if (st) { st.textContent = prefs.otherAccount ? "別アカウントで読み込みます（「読み込む」で選択）。" : "同期用アカウントで読み込みます。"; st.classList.remove("is-error"); }
+    });
+    q("#gc-clientid-save").addEventListener("click", () => {
+      const v = (q("#gc-clientid").value || "").trim(); saveClientId(v); gisToken = null;
+      setStatus(v ? "クライアントIDを保存しました。「読み込む」で別アカウントを選べます。" : "クライアントIDを消去しました。");
+    });
     q("#gc-ds").addEventListener("change", (e) => { prefs.dayStart = e.target.value || "07:00"; savePrefs(); renderView(); });
     q("#gc-de").addEventListener("change", (e) => { prefs.dayEnd = e.target.value || "22:00"; savePrefs(); renderView(); });
     q("#gc-defdur").addEventListener("change", (e) => { prefs.defDur = Number(e.target.value) || 60; savePrefs(); });
@@ -494,7 +564,7 @@
       freeWindows.forEach((w, wi) => {
         const s = Math.max(w.start, d0), e = Math.min(w.end, d1);
         if (e <= s || ymd(s) !== dY) return;
-        blocks += blockHTML(topOf(s), (e - s) / 3600000 * HOUR_PX, "b-free-win", "空き " + fmtTime(s) + "–" + fmtTime(e), "空き時間（タップで削除）", ' data-fi="' + wi + '"');
+        blocks += blockHTML(topOf(s), (e - s) / 3600000 * HOUR_PX, "b-free-win", "空き " + fmtTime(s) + "–" + fmtTime(e), "空き時間（ドラッグで移動・タップで削除）", ' data-fi="' + wi + '"');
       });
       // 配置タスク（紫）
       planRows.forEach((r, ri) => {
@@ -516,7 +586,7 @@
     }
 
     el.innerHTML =
-      '<div class="gcal-legend"><span class="lg lg-busy"></span>Googleの予定　<span class="lg lg-free"></span>空き時間（ドラッグで作成／タップで削除）　<span class="lg lg-task"></span>配置したタスク（ドラッグで移動）</div>' +
+      '<div class="gcal-legend"><span class="lg lg-busy"></span>Googleの予定　<span class="lg lg-free"></span>空き時間（ドラッグで作成・移動／タップで削除）　<span class="lg lg-task"></span>配置したタスク（ドラッグで移動）</div>' +
       '<div class="gcal-cal-scroll"><div class="gcal-cal-grid gcal-week">' + cols + '</div></div>';
 
     // ドラッグ座標系を記録
@@ -560,7 +630,9 @@
       const r = planRows[ri];
       drag = { type: "task", ri, moved: false, grabMin: snapMin(yToMin(e.clientY, body)) - minOfDay(r.start), pid: e.pointerId };
     } else if (freeEl) {
-      drag = { type: "free", fi: Number(freeEl.dataset.fi), moved: false, pid: e.pointerId };
+      const fi = Number(freeEl.dataset.fi);
+      const w = freeWindows[fi];
+      drag = { type: "free", fi, moved: false, grabMin: snapMin(yToMin(e.clientY, body)) - minOfDay(w.start), pid: e.pointerId };
     } else {
       const m = snapMin(yToMin(e.clientY, body));
       drag = { type: "draw", ymd: body.dataset.ymd, dayms: Number(body.dataset.dayms), startMin: m, curMin: m, moved: false, pid: e.pointerId };
@@ -586,6 +658,14 @@
       m = Math.max(0, Math.min(24 * 60 - r.dur, m));
       const newStart = col.dayms + m * 60000;
       if (newStart !== r.start) { r.start = newStart; drag.moved = true; renderWeek(); }
+    } else if (drag.type === "free") {
+      const col = colFromX(e.clientX); if (!col) return;
+      const w = freeWindows[drag.fi]; if (!w) return;
+      const durMin = Math.round((w.end - w.start) / 60000);
+      let m = snapMin(yToMin(e.clientY, col.el) - drag.grabMin);
+      m = Math.max(0, Math.min(24 * 60 - durMin, m));
+      const ns = col.dayms + m * 60000;
+      if (ns !== w.start) { w.start = ns; w.end = ns + durMin * 60000; drag.moved = true; renderWeek(); }
     }
   }
 
@@ -600,8 +680,9 @@
       }
       drag = null; renderWeek(); renderUnplaced();
     } else if (drag.type === "free") {
-      if (!drag.moved) { freeWindows.splice(drag.fi, 1); saveFree(); }
-      drag = null; renderWeek();
+      if (drag.moved) { mergeFree(); saveFree(); }        // ドラッグ＝移動
+      else { freeWindows.splice(drag.fi, 1); saveFree(); } // タップ＝削除
+      drag = null; renderWeek(); renderUnplaced();
     } else if (drag.type === "task") {
       if (drag.moved) savePlan();
       drag = null; renderWeek();

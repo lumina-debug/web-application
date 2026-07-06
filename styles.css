@@ -541,7 +541,10 @@ body {
 .gcal-settings { font-size: 13px; }
 .gcal-settings summary { cursor: pointer; color: var(--text-soft); }
 .gcal-hours { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; color: var(--text-soft); }
-.gcal-hours input[type="time"], .gcal-hours select { padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.gcal-hours input[type="time"], .gcal-hours input[type="text"], .gcal-hours select { padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.gcal-hours input[type="text"] { min-width: 260px; flex: 1 1 220px; }
+.gcal-chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--text-soft); cursor: pointer; }
+.gcal-other-setup { margin-top: 6px; }
 /* タスク選択・操作 */
 .gcal-plan-controls { margin-top: 12px; }
 .gcal-tasks-wrap { margin-bottom: 8px; }
@@ -564,14 +567,15 @@ body {
 .gcal-col { flex: 1 1 0; min-width: 84px; border-left: 1px solid var(--border); }
 .gcal-col.gcal-axis { flex: 0 0 44px; min-width: 44px; border-left: none; }
 .gcal-col.is-today .gcal-col-head { background: var(--accent-soft); color: var(--accent); }
-.gcal-col-head { font-size: 12px; font-weight: 600; text-align: center; padding: 6px 2px; border-bottom: 1px solid var(--border); color: var(--text-soft); position: sticky; top: 0; background: var(--surface); z-index: 2; }
+/* ヘッダーは全列で高さを固定（軸列と日付列の本体開始位置を揃え、時刻目盛りのズレを防ぐ） */
+.gcal-col-head { height: 40px; box-sizing: border-box; overflow: hidden; font-size: 12px; font-weight: 600; text-align: center; padding: 5px 2px; border-bottom: 1px solid var(--border); color: var(--text-soft); position: sticky; top: 0; background: var(--surface); z-index: 2; }
 .gcal-allday { font-size: 10px; font-weight: 400; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gcal-col-body { position: relative; background: repeating-linear-gradient(to bottom, var(--border) 0 1px, transparent 1px 44px); cursor: crosshair; }
 .gcal-hour-label { position: absolute; right: 4px; transform: translateY(-6px); font-size: 10px; color: var(--text-faint); }
 .gcal-block { position: absolute; left: 2px; right: 2px; border-radius: 4px; padding: 2px 4px; overflow: hidden; font-size: 10px; line-height: 1.25; box-sizing: border-box; }
 .gcal-block.b-busy { background: #e4e7ec; color: var(--text-soft); border: 1px solid #d3d8e0; }
 .gcal-block.b-busy.b-free-ev { opacity: 0.5; border-style: dashed; }
-.gcal-block.b-free-win { background: var(--pri-low-bg); color: var(--pri-low); border: 1px solid var(--pri-low); cursor: pointer; }
+.gcal-block.b-free-win { background: var(--pri-low-bg); color: var(--pri-low); border: 1px solid var(--pri-low); cursor: grab; }
 .gcal-block.b-free-preview { background: var(--pri-low-bg); color: var(--pri-low); border: 1px dashed var(--pri-low); opacity: 0.8; z-index: 3; }
 .gcal-block.b-task { left: 24%; background: var(--accent); color: #fff; border: 1px solid var(--accent); z-index: 2; cursor: grab; font-weight: 600; }
 .gcal-block.b-task.is-warn { background: var(--pri-mid); border-color: var(--pri-mid); }
