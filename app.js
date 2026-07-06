@@ -1059,6 +1059,7 @@ function init() {
   document.getElementById("urgent-task-btn").addEventListener("click", () => openTaskModal(null, null, { pinned: true }));
   document.getElementById("select-btn").addEventListener("click", toggleSelectMode);
   document.getElementById("bulk-task-btn").addEventListener("click", openBulkModal);
+  document.getElementById("fix-effort-btn").addEventListener("click", openFixEffortModal);
   document.getElementById("ics-task-btn").addEventListener("click", openIcsModal);
   document.getElementById("recurring-btn").addEventListener("click", openRecurringModal);
   document.getElementById("focus-btn").addEventListener("click", () => {
@@ -1783,6 +1784,211 @@ function openBulkModal() {
 
   openModal();
   document.getElementById("bulk-input").focus();
+}
+
+/* =========================================================
+ * 見積り時間の修正（AIでまとめて修正）
+ *   現在のタスク一覧＋手入力の修正指示をAIに渡し、
+ *   返ってきた JSON（[{n,effort}]）を解析して effort を更新する。
+ * ======================================================= */
+function buildFixEffortPrompt(instruction) {
+  const tasks = activeTasks();
+  const ids = tasks.map((t) => t.id);
+  const lines = tasks.map((t, i) => {
+    const goal = t.goalId ? goalById(t.goalId) : null;
+    let line = `${i + 1}. ${t.title}`
+      + ` / 目標:${goal ? goal.title : "なし"}`
+      + ` / 現在の見積:${t.effort ? t.effort + "分" : "未設定"}`;
+    if (t.note) line += ` / メモ:${t.note}`;
+    return line;
+  });
+
+  const prompt = `あなたは優秀なアシスタントです。下のタスク一覧には作業時間の見積り（分）が付いています。ユーザーの修正指示に従って、見積りが間違っているタスクの時間を直してください。
+
+【タスク一覧】
+${lines.join("\n")}
+
+【ユーザーからの修正指示】
+${instruction}
+
+【出力】
+修正が必要なタスクだけを、次の形式のJSON配列だけで出力してください。前後に説明文やコードフェンスは付けないでください。
+[
+  {"n":3,"effort":45}
+]
+- n は上のタスク番号
+- effort は修正後の作業時間（分単位の整数）
+- 指示に関係しないタスク・修正不要なタスクは含めない`;
+
+  return { prompt, ids };
+}
+
+// 全角数字→半角
+function toHalfWidthInt(v) {
+  if (typeof v === "number") return v;
+  if (typeof v !== "string") return NaN;
+  const half = v.replace(/[０-９]/g, (d) => "０１２３４５６７８９".indexOf(d));
+  return parseInt(half, 10);
+}
+
+// AI回答の [{n,effort}] を、現在のタスクへの変更リストに変換
+function normalizeEffortFixes(arr, ids) {
+  const byId = {};
+  activeTasks().forEach((t) => { byId[t.id] = t; });
+  const out = [];
+  const seen = {};
+  arr.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const n = toHalfWidthInt(item.n != null ? item.n : item.number);
+    if (typeof n !== "number" || isNaN(n)) return;
+    const id = ids[n - 1];
+    if (!id || seen[id]) return;
+    const task = byId[id];
+    if (!task) return;
+
+    let effort = item.effort;
+    if (typeof effort === "string") effort = parseInt(effort, 10);
+    effort = (typeof effort === "number" && !isNaN(effort) && effort > 0) ? Math.round(effort) : null;
+    if (effort == null || task.effort === effort) return; // 未取得・変化なしは除外
+
+    seen[id] = true;
+    out.push({ id, title: task.title, oldEffort: task.effort, newEffort: effort });
+  });
+  return out;
+}
+
+// 修正プレビュー（旧→新、チェックで反映）
+function effortFixPreviewHTML(fixes) {
+  return `<div class="bulk-preview-head">${fixes.length}件の見積りを修正（チェックしたものを反映）</div>` +
+    fixes.map((f, i) =>
+      `<label class="bulk-row"><input type="checkbox" class="fix-chk" data-i="${i}" checked>`
+      + `<div class="bulk-row-main"><div class="bulk-row-title">${esc(f.title)}</div>`
+      + `<div class="task-meta"><span class="chip">⏱ ${esc(effortLabel(f.oldEffort))} → <strong>${esc(effortLabel(f.newEffort))}</strong></span></div>`
+      + `</div></label>`
+    ).join("");
+}
+
+function openFixEffortModal() {
+  const activeCount = activeTasks().length;
+  modalTitle.textContent = "見積り時間の修正（AIでまとめて修正）";
+  modalBody.innerHTML = `
+    <p class="ai-sub">今のタスク一覧（未完了 ${activeCount}件）と、下に書いた修正指示をAIに渡します。AIが直した見積りを確認してから反映できます。</p>
+    <div class="field">
+      <textarea id="fix-input" rows="5" placeholder="例）料理系のタスクは実際その倍かかる。『企画書ドラフト』は30分で終わった。買い物はどれも15分に。"></textarea>
+    </div>
+    <div class="bulk-actions">
+      <button type="button" class="btn btn-primary" id="fix-run">⚡ AIで修正</button>
+      <button type="button" class="btn btn-ghost" id="fix-copy">📋 プロンプトをコピー</button>
+      <span id="fix-status" class="ai-status"></span>
+    </div>
+    <details class="ai-block">
+      <summary>AIの回答（JSON）を貼り付けて解析（コピペ方式）</summary>
+      <textarea id="fix-paste" class="ai-paste" rows="5" placeholder="AIの回答をここに貼り付け…"></textarea>
+      <button type="button" class="btn btn-ghost" id="fix-parse">解析</button>
+    </details>
+    <div id="fix-preview" class="bulk-preview"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="fix-cancel">閉じる</button>
+      <button type="button" class="btn btn-primary" id="fix-apply" disabled>選択したタスクに反映</button>
+    </div>`;
+
+  let fixes = [];
+  let promptIds = null; // プロンプト生成時のタスク番号→id対応（コピペ方式でも番号を一致させる）
+
+  function setFixStatus(m) {
+    const e = document.getElementById("fix-status");
+    if (e) e.textContent = m;
+  }
+
+  function showPreview() {
+    const box = document.getElementById("fix-preview");
+    const applyBtn = document.getElementById("fix-apply");
+    if (!fixes.length) { box.innerHTML = ""; applyBtn.disabled = true; return; }
+    box.innerHTML = effortFixPreviewHTML(fixes);
+    applyBtn.disabled = false;
+  }
+
+  function showRaw(text) {
+    document.getElementById("fix-preview").innerHTML = rawReplyHTML(text);
+    document.getElementById("fix-apply").disabled = true;
+  }
+
+  function ingest(text) {
+    if (!text || !text.trim()) {
+      setFixStatus("AIからの回答が空でした。モデルを変える/コピペ方式をお試しください。");
+      return;
+    }
+    const arr = extractJsonArray(text);
+    if (!arr) { setFixStatus("JSONを読み取れませんでした。生の回答を表示します。"); showRaw(text); return; }
+    const ids = promptIds || activeTasks().map((t) => t.id);
+    fixes = normalizeEffortFixes(arr, ids);
+    if (!fixes.length) { setFixStatus("修正が必要なタスクは見つかりませんでした（変化なし・番号不一致など）。"); showRaw(text); return; }
+    setFixStatus(`${fixes.length}件の修正案を読み取りました。確認して反映してください。`);
+    showPreview();
+  }
+
+  document.getElementById("fix-run").addEventListener("click", async () => {
+    const text = document.getElementById("fix-input").value.trim();
+    if (!text) { setFixStatus("修正したい内容を入力してください。"); return; }
+    if (!activeTasks().length) { setFixStatus("修正できるタスクがありません。"); return; }
+    if (!getApiKey()) { setFixStatus("APIキーが未設定です。『プロンプトをコピー』で手動でも作れます（設定はAI提案タブから）。"); return; }
+    const btn = document.getElementById("fix-run");
+    btn.disabled = true;
+    setFixStatus("AIで修正中…");
+    try {
+      const built = buildFixEffortPrompt(text);
+      promptIds = built.ids;
+      const full = await streamAI(built.prompt, () => {}, 8192);
+      ingest(full);
+    } catch (e) {
+      setFixStatus("エラー: " + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById("fix-copy").addEventListener("click", async () => {
+    const text = document.getElementById("fix-input").value.trim();
+    if (!text) { setFixStatus("先に修正したい内容を入力してください。"); return; }
+    if (!activeTasks().length) { setFixStatus("修正できるタスクがありません。"); return; }
+    const built = buildFixEffortPrompt(text);
+    promptIds = built.ids;
+    try {
+      await navigator.clipboard.writeText(built.prompt);
+      setFixStatus("プロンプトをコピーしました。AIに貼り付け、回答を下の欄に貼って『解析』を押してください。");
+    } catch (e) {
+      setFixStatus("自動コピー不可。プロンプト全文は手動でコピーしてください。");
+    }
+  });
+
+  document.getElementById("fix-parse").addEventListener("click", () => {
+    const text = document.getElementById("fix-paste").value.trim();
+    if (!text) { setFixStatus("AIの回答を貼り付けてください。"); return; }
+    ingest(text);
+  });
+
+  document.getElementById("fix-cancel").addEventListener("click", closeModal);
+
+  document.getElementById("fix-apply").addEventListener("click", () => {
+    const checks = Array.from(document.querySelectorAll("#fix-preview .fix-chk:checked")).map((c) => Number(c.dataset.i));
+    if (!checks.length) { setFixStatus("反映するタスクを選んでください。"); return; }
+    let applied = 0;
+    checks.forEach((i) => {
+      const f = fixes[i];
+      if (!f) return;
+      const task = state.tasks.find((t) => t.id === f.id);
+      if (!task) return;
+      task.effort = f.newEffort;
+      applied++;
+    });
+    save();
+    renderAll();
+    closeModal();
+    switchTab("priority");
+  });
+
+  openModal();
+  document.getElementById("fix-input").focus();
 }
 
 /* =========================================================
