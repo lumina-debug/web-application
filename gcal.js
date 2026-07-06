@@ -1,108 +1,109 @@
 "use strict";
 
 /* =========================================================
- * 段取り（Dandori） — 週間予定表モジュール（Google カレンダー連携）
+ * 段取り（Dandori） — 予定表モジュール（週表示 / 月表示）
  *
- *   分割済みの未完了タスクを「その週の空き時間」に自動で割り当てて
- *   週間予定表（アプリ内カレンダー）を作り、Google カレンダーへ登録する。
+ *   コンセプト：
+ *   - Google カレンダーは「既存予定の閲覧のみ」（readonly）。
+ *     予定を見て“空いている時間”を把握するためだけに使う。
+ *     タスクを Google に書き込むことはしない（カレンダーにはタスク以外も
+ *     色々入っているため、用途を空き時間把握に絞る）。
+ *   - ユーザーがカレンダー上を**ドラッグ／タップして「空き時間」枠**を作る。
+ *   - アプリがその空き時間へ**未完了タスクを自動配置**（優先度順）。
+ *   - 配置したタスク（紫のブロック）は**ドラッグで動かせる**。
+ *   - **週表示 / 月表示**を切り替え、前後ナビで任意の週・月へ。
  *
- *   - 既存の予定は Google カレンダーから読み込む／手入力の両対応
- *   - 割り当ては決め打ちルール：至急 → 締切が近い → 優先度スコア順に、
- *     稼働時間帯の早い空きスロット（15分刻み）へ詰める
- *   - 予定表はアプリ内の週カレンダーに表示し、行単位で日時・所要を調整可
- *   - 登録は Google Calendar API（REST）。アクセストークンは sync.js の
- *     window.DandoriCloud ブリッジ（Firebase Auth の Google ログイン）から取得
- *   - Google に接続できない環境向けに .ics 保存も用意
+ *   保存（すべて端末ローカル・クラウド非同期）：
+ *   - dandori.gcalPrefs  … 表示時間帯・既定所要
+ *   - dandori.gcalFree   … 空き時間枠 [{start,end}]（ms）
+ *   - dandori.gcalPlan   … 配置したタスク [{id,title,...,start,dur}]
  *
- *   app.js とは window.Dandori（state 参照・priorityOf）経由で疎結合。
+ *   app.js とは window.Dandori（state 参照・priorityOf）で疎結合。
+ *   Google 認証は sync.js の window.DandoriCloud ブリッジ経由。
  * ======================================================= */
 
 (function () {
 
-  const SCOPE = "https://www.googleapis.com/auth/calendar.events";
+  const SCOPE = "https://www.googleapis.com/auth/calendar.readonly"; // 閲覧のみ
   const API = "https://www.googleapis.com/calendar/v3";
-  const PREFS_KEY = "dandori.gcalPrefs";     // 稼働時間帯などの端末ローカル設定
-  const PENDING_KEY = "dandori.gcalPending"; // リダイレクトログイン中の作業状態
-  const STEP_MS = 15 * 60 * 1000;            // 開始時刻は15分刻み
-  const HOUR_PX = 44;                        // カレンダー1時間の高さ(px)
+  const PREFS_KEY = "dandori.gcalPrefs";
+  const FREE_KEY = "dandori.gcalFree";
+  const PLAN_KEY = "dandori.gcalPlan";
+  const PENDING_KEY = "dandori.gcalPending";
+  const STEP_MS = 15 * 60 * 1000; // 15分刻み
+  const HOUR_PX = 44;             // 週表示の1時間の高さ
   const WD = ["日", "月", "火", "水", "木", "金", "土"];
 
   /* ---------- 状態 ---------- */
   let overlay = null;
   let prefs = loadPrefs();
-  let weekOffset = 0;        // 0=今週, 1=来週, 2=再来週
-  let gcalBusy = null;       // Googleカレンダーから読んだ予定（null=未読込）
-  let manualBusy = [];       // 手入力の予定（パース済み）
-  let manualText = "";       // 手入力テキスト（textarea の内容）
-  let selectedIds = null;    // 割り当て対象タスクid（null=未初期化→全選択）
-  let plan = null;           // { rows:[...], unplaced:[...] }
-  let pushing = false;
+  let viewMode = "week";                 // "week" | "month"
+  let anchor = startOfDay(new Date());   // 表示中の週/月を表す基準日
+  let gcalBusy = [];                     // 読み込んだ既存予定
+  let cachedRange = null;                // {start,end} 取得済み範囲(ms)
+  let freeWindows = loadFree();          // [{start,end}] ms
+  let planRows = loadPlan();             // 配置済みタスク
+  let lastUnplaced = [];                 // 直近の自動配置で入りきらなかったもの
+  let selectedIds = null;                // 配置対象タスクid（null=未初期化→全選択）
+  let drag = null;                       // ドラッグ中の状態
+  let render = { startMin: 0, top: 0, cols: [] }; // 週表示の座標系（ドラッグ計算用）
 
-  function defaults() { return { workStart: "09:00", workEnd: "18:00", weekend: false, defDur: 60, spanWeeks: 1 }; }
-  function spanWeeks() { return prefs.spanWeeks === 2 ? 2 : 1; }
-  function spanDays() { return spanWeeks() * 7; }
+  /* ---------- 保存/読込 ---------- */
+  function prefDefaults() { return { dayStart: "07:00", dayEnd: "22:00", defDur: 60 }; }
   function loadPrefs() {
-    try {
-      const o = JSON.parse(localStorage.getItem(PREFS_KEY) || "null");
-      if (o) return Object.assign(defaults(), o);
-    } catch (e) { /* ignore */ }
-    return defaults();
+    try { const o = JSON.parse(localStorage.getItem(PREFS_KEY) || "null"); if (o) return Object.assign(prefDefaults(), o); } catch (e) { /* ignore */ }
+    return prefDefaults();
   }
-  function savePrefs() {
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* ignore */ }
+  function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* ignore */ } }
+  function loadFree() {
+    try { const a = JSON.parse(localStorage.getItem(FREE_KEY) || "[]"); const t0 = startOfDay(new Date()).getTime(); return (a || []).filter((w) => w && w.end > t0); } catch (e) { return []; }
   }
+  function saveFree() { try { localStorage.setItem(FREE_KEY, JSON.stringify(freeWindows)); } catch (e) { /* ignore */ } }
+  function loadPlan() {
+    try { const a = JSON.parse(localStorage.getItem(PLAN_KEY) || "[]"); const t0 = startOfDay(new Date()).getTime(); return (a || []).filter((r) => r && (r.start + r.dur * 60000) > t0); } catch (e) { return []; }
+  }
+  function savePlan() { try { localStorage.setItem(PLAN_KEY, JSON.stringify(planRows)); } catch (e) { /* ignore */ } }
 
-  /* ---------- 小道具 ---------- */
+  /* ---------- 時刻ユーティリティ ---------- */
+  function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  function addMonths(d, n) { const x = new Date(d); x.setMonth(x.getMonth() + n); return x; }
+  function startOfWeek(d) { const x = startOfDay(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; } // 月曜始まり
+  function startOfMonth(d) { const x = startOfDay(d); x.setDate(1); return x; }
+  function p2(n) { return String(n).padStart(2, "0"); }
+  function ymd(d) { d = new Date(d); return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); }
+  function mdw(d) { d = new Date(d); return (d.getMonth() + 1) + "/" + d.getDate() + "(" + WD[d.getDay()] + ")"; }
+  function parseHM(s) { const m = String(s).split(":"); return (Number(m[0]) || 0) * 60 + (Number(m[1]) || 0); }
+  function minOfDay(ms) { const d = new Date(ms); return d.getHours() * 60 + d.getMinutes(); }
+  function fmtTime(ms) { const d = new Date(ms); return p2(d.getHours()) + ":" + p2(d.getMinutes()); }
+  function snapUp(ms) { return Math.ceil(ms / STEP_MS) * STEP_MS; }
+  function snapNear(ms) { return Math.round(ms / STEP_MS) * STEP_MS; }
+  function dayMs(dateOrMs) { return startOfDay(dateOrMs).getTime(); }
+  function msg(e) { return (e && (e.message || e.code)) || String(e); }
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  function p2(n) { return String(n).padStart(2, "0"); }
-  function ymd(d) { return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); }
-  function atTime(d, hmStr) {
-    const m = String(hmStr || "0:00").split(":");
-    const x = new Date(d); x.setHours(Number(m[0]) || 0, Number(m[1]) || 0, 0, 0); return x;
-  }
-  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-  function mondayOf(d) {
-    const x = new Date(d); x.setHours(0, 0, 0, 0);
-    x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x;
-  }
-  function weekStartDate() { return addDays(mondayOf(new Date()), weekOffset * 7); }
-  function mdw(d) { return (d.getMonth() + 1) + "/" + d.getDate() + "(" + WD[d.getDay()] + ")"; }
-  function ceilStep(d) { return new Date(Math.ceil(d.getTime() / STEP_MS) * STEP_MS); }
-  function parseHM(hmStr) { const m = String(hmStr).split(":"); return (Number(m[0]) || 0) * 60 + (Number(m[1]) || 0); }
-  function minOfDay(d) { return d.getHours() * 60 + d.getMinutes(); }
-  function msg(e) { return (e && (e.message || e.code)) || String(e); }
   function q(sel) { return overlay ? overlay.querySelector(sel) : null; }
-
   function toRFC3339(d) {
-    const off = -d.getTimezoneOffset();
-    const sign = off >= 0 ? "+" : "-";
-    const a = Math.abs(off);
+    d = new Date(d);
+    const off = -d.getTimezoneOffset(), sign = off >= 0 ? "+" : "-", a = Math.abs(off);
     return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) +
-      "T" + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":00" +
-      sign + p2(Math.floor(a / 60)) + ":" + p2(a % 60);
+      "T" + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":00" + sign + p2(Math.floor(a / 60)) + ":" + p2(a % 60);
   }
 
-  /* ---------- タスク（app.js の state を参照） ---------- */
-  function prioScore(t) {
-    try { const p = window.Dandori.priorityOf(t); return (p && p.score) || 0; } catch (e) { return 0; }
-  }
-  // 割り当て順：至急 → 締切が近い → 優先度スコア
+  /* ---------- app.js のタスク（state 参照） ---------- */
+  function prioScore(t) { try { const p = window.Dandori.priorityOf(t); return (p && p.score) || 0; } catch (e) { return 0; } }
   function cmpTasks(a, b) {
-    if (!!a.t.pinned !== !!b.t.pinned) return a.t.pinned ? -1 : 1;
-    const da = a.t.deadline || "9999-12-31", db = b.t.deadline || "9999-12-31";
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    const da = a.deadline || "9999-12-31", db = b.deadline || "9999-12-31";
     if (da !== db) return da < db ? -1 : 1;
-    return b.score - a.score;
+    return prioScore(b) - prioScore(a);
   }
   function activeTasksSorted() {
     const st = window.Dandori.getState();
-    return st.tasks.filter((t) => t.status !== "done")
-      .map((t) => ({ t, score: prioScore(t) }))
-      .sort(cmpTasks)
-      .map((x) => x.t);
+    return st.tasks.filter((t) => t.status !== "done").slice().sort(cmpTasks);
   }
   function goalTitle(goalId) {
     if (!goalId) return "";
@@ -111,350 +112,168 @@
     return g ? ((g.emoji ? g.emoji + " " : "") + g.title) : "";
   }
 
-  /* ---------- 手入力の予定のパース ----------
-   * 1行1件。例：
-   *   7/7 13:00-14:00 定例会議
-   *   2026/7/9 10:00〜11:30 通院
-   *   金 18:00-19:00 送迎        （曜日はその週の日付に読み替え）      */
-  function parseBusyLines(text, weekStart) {
-    const events = [], errors = [];
-    const reDate = /^\s*(?:(\d{4})[\/\-年])?(\d{1,2})[\/\-月](\d{1,2})日?\s+(\d{1,2}):(\d{2})\s*[-〜~－ー]\s*(\d{1,2}):(\d{2})\s*(.*)$/;
-    const reWd = /^\s*([月火水木金土日])(?:曜日?)?\s+(\d{1,2}):(\d{2})\s*[-〜~－ー]\s*(\d{1,2}):(\d{2})\s*(.*)$/;
-    String(text || "").split(/\r?\n/).forEach((line, i) => {
-      if (!line.trim()) return;
-      let d = null, rest = null, m = line.match(reDate);
-      if (m) {
-        d = new Date(m[1] ? Number(m[1]) : weekStart.getFullYear(), Number(m[2]) - 1, Number(m[3]));
-        if (!m[1]) { // 年の指定なし：選択中の週に近い年とみなす
-          if (d - weekStart > 180 * 86400000) d.setFullYear(d.getFullYear() - 1);
-          else if (weekStart - d > 180 * 86400000) d.setFullYear(d.getFullYear() + 1);
-        }
-        rest = m.slice(4);
-      } else if ((m = line.match(reWd))) {
-        d = addDays(weekStart, (WD.indexOf(m[1]) + 6) % 7); // 月=先頭
-        rest = m.slice(2);
-      } else { errors.push(i + 1); return; }
-      const s = new Date(d); s.setHours(Number(rest[0]), Number(rest[1]), 0, 0);
-      const e = new Date(d); e.setHours(Number(rest[2]), Number(rest[3]), 0, 0);
-      if (e <= s) { errors.push(i + 1); return; }
-      events.push({ start: s, end: e, title: (rest[4] || "").trim() || "予定", src: "manual" });
-    });
-    return { events, errors };
-  }
-
-  // 空き時間の計算に使う「ふさがっている時間」（終日・空き扱いの予定は除く）
-  function allBusy() {
-    const g = (gcalBusy || []).filter((b) => !b.allDay && !b.free);
-    return g.concat(manualBusy);
-  }
-
-  /* ---------- 自動割り当て ----------
-   * tasks: 割り当てるタスク配列
-   * opts:  { weekStart, workStart, workEnd, weekend, defDur, busy, now, scoreFn } */
-  function computePlan(tasks, opts) {
-    const now = opts.now || new Date();
-    const scoreFn = opts.scoreFn || prioScore;
-
-    // 稼働日ごとの空きスロットを作る（期間 = opts.spanDays 日、既定7日）
-    const days = [];
-    for (let i = 0; i < (opts.spanDays || 7); i++) {
-      const d = addDays(opts.weekStart, i);
-      const dow = d.getDay();
-      if (!opts.weekend && (dow === 0 || dow === 6)) continue;
-      let s = atTime(d, opts.workStart);
-      const e = atTime(d, opts.workEnd);
-      if (e <= now) continue;           // 過ぎた日はスキップ
-      if (s < now) s = new Date(now);   // 今日は「今」以降だけ使う
-      s = ceilStep(s);
-      if (s >= e) continue;
-      const dayBusy = (opts.busy || [])
-        .filter((b) => b.end > s && b.start < e)
-        .map((b) => ({ s: b.start < s ? s : b.start, e: b.end > e ? e : b.end }))
-        .sort((a, b) => a.s - b.s);
-      const slots = [];
-      let cur = s;
-      for (const b of dayBusy) {
-        if (b.s > cur) slots.push({ s: new Date(cur), e: new Date(b.s) });
-        if (b.e > cur) cur = b.e;
+  /* =========================================================
+   * スケジューリング（純粋関数：Nodeでテスト可能）
+   * ======================================================= */
+  // 空き時間枠から、既存予定（busy）と「今」を差し引いた実際の空きスロットを返す
+  function computeOpenSlots(free, busy, now) {
+    now = now || 0;
+    const b = (busy || []).filter((x) => !x.allDay && !x.free).map((x) => ({ s: x.start, e: x.end }));
+    let slots = (free || []).map((w) => ({ s: Math.max(w.start, now), e: w.end })).filter((x) => x.e - x.s >= STEP_MS);
+    for (const bb of b) {
+      const nx = [];
+      for (const s of slots) {
+        if (bb.e <= s.s || bb.s >= s.e) { nx.push(s); continue; }
+        if (bb.s > s.s) nx.push({ s: s.s, e: Math.min(bb.s, s.e) });
+        if (bb.e < s.e) nx.push({ s: Math.max(bb.e, s.s), e: s.e });
       }
-      if (cur < e) slots.push({ s: new Date(cur), e: new Date(e) });
-      days.push({ date: d, slots });
+      slots = nx;
     }
+    return slots.filter((x) => x.e - x.s >= STEP_MS).sort((a, b2) => a.s - b2.s);
+  }
 
-    const sorted = tasks.map((t) => ({ t, score: scoreFn(t) })).sort(cmpTasks);
-
+  // タスク（cmpTasks済み想定）を空きスロットへ詰める
+  function placeTasks(tasks, slots, defDur) {
+    slots = slots.map((s) => ({ s: s.s, e: s.e }));
     const rows = [], unplaced = [];
-    for (const { t } of sorted) {
-      const dur = Math.max(15, Math.round((t.effort || opts.defDur) / 5) * 5);
-      let placed = null;
-      outer:
-      for (const day of days) {
-        for (let si = 0; si < day.slots.length; si++) {
-          const start = ceilStep(day.slots[si].s);
-          const end = new Date(start.getTime() + dur * 60000);
-          if (end <= day.slots[si].e) { placed = { day, si, start, end }; break outer; }
-        }
+    for (const t of tasks) {
+      const dur = Math.max(15, Math.round(((t.effort || defDur) || 60) / 5) * 5);
+      let hit = -1, start = 0;
+      for (let i = 0; i < slots.length; i++) {
+        const st = snapUp(slots[i].s);
+        if (st + dur * 60000 <= slots[i].e) { hit = i; start = st; break; }
       }
-      if (!placed) {
-        unplaced.push({
-          id: t.id, title: t.title, dur,
-          reason: "空き時間が足りません" + (dur > 240 ? "（見積が長いので「分解」で分割を検討）" : ""),
-        });
-        continue;
-      }
-      // 使ったスロットを前後の残りに分割
-      const slot = placed.day.slots[placed.si];
-      const rest = [];
-      if (placed.start - slot.s >= STEP_MS) rest.push({ s: slot.s, e: placed.start });
-      if (slot.e - placed.end >= STEP_MS) rest.push({ s: placed.end, e: slot.e });
-      placed.day.slots.splice(placed.si, 1, ...rest);
-
-      let warn = "";
-      if (t.deadline && placed.end > atTime(new Date(t.deadline + "T00:00:00"), "23:59")) {
-        warn = "締切（" + t.deadline.slice(5).replace("-", "/") + "）を過ぎた割り当てです";
-      }
-      rows.push({
-        id: t.id, title: t.title, note: t.note || "", goalId: t.goalId || null,
-        deadline: t.deadline || null, pinned: !!t.pinned,
-        day: ymd(placed.start), time: p2(placed.start.getHours()) + ":" + p2(placed.start.getMinutes()),
-        dur, include: true, warn, done: false, error: "",
-      });
+      if (hit < 0) { unplaced.push({ id: t.id, title: t.title, dur }); continue; }
+      const slot = slots[hit], end = start + dur * 60000, rest = [];
+      if (start - slot.s >= STEP_MS) rest.push({ s: slot.s, e: start });
+      if (slot.e - end >= STEP_MS) rest.push({ s: end, e: slot.e });
+      slots.splice(hit, 1, ...rest);
+      rows.push({ id: t.id, start, dur });
     }
     return { rows, unplaced };
   }
 
-  // 行編集後の警告（締切・既存予定との重なり）を付け直す
-  function recomputeWarns() {
-    if (!plan) return;
-    const busy = allBusy();
-    const rows = plan.rows;
-    for (const r of rows) {
-      r.warn = "";
-      if (!r.include || r.done) continue;
-      const s = new Date(r.day + "T" + r.time + ":00");
-      const e = new Date(s.getTime() + r.dur * 60000);
-      if (r.deadline && e > atTime(new Date(r.deadline + "T00:00:00"), "23:59")) {
-        r.warn = "締切（" + r.deadline.slice(5).replace("-", "/") + "）を過ぎた割り当てです";
-        continue;
-      }
-      for (const b of busy) {
-        if (b.end > s && b.start < e) { r.warn = "既存の予定と重なっています"; break; }
-      }
-      if (r.warn) continue;
-      for (const o of rows) {
-        if (o === r || !o.include) continue;
-        const os = new Date(o.day + "T" + o.time + ":00");
-        const oe = new Date(os.getTime() + o.dur * 60000);
-        if (oe > s && os < e) { r.warn = "他のタスクと重なっています"; break; }
-      }
-    }
+  function rowFromTask(t, start, dur) {
+    return { id: t.id, title: t.title, note: t.note || "", goalId: t.goalId || null,
+      deadline: t.deadline || null, pinned: !!t.pinned, start, dur };
   }
 
-  /* ---------- Google 認証（sync.js のブリッジ経由） ---------- */
+  function autoPlace() {
+    const tasks = activeTasksSorted().filter((t) => selectedIds.has(t.id));
+    const slots = computeOpenSlots(freeWindows, gcalBusy, Date.now());
+    const res = placeTasks(tasks, slots, prefs.defDur);
+    const byId = {};
+    tasks.forEach((t) => { byId[t.id] = t; });
+    planRows = res.rows.map((r) => rowFromTask(byId[r.id], r.start, r.dur));
+    lastUnplaced = res.unplaced.map((u) => ({ title: (byId[u.id] && byId[u.id].title) || u.title, dur: u.dur }));
+    savePlan();
+  }
+
+  // 行の警告（重なり・空き外・締切超過・過去）
+  function rowWarn(r) {
+    const s = r.start, e = r.start + r.dur * 60000;
+    if (e <= Date.now()) return "過去の時間です";
+    if (r.deadline) { const dl = new Date(r.deadline + "T23:59:59").getTime(); if (e > dl) return "締切（" + r.deadline.slice(5).replace("-", "/") + "）を過ぎています"; }
+    for (const b of gcalBusy) { if (b.allDay || b.free) continue; if (b.end > s && b.start < e) return "予定と重なっています"; }
+    for (const o of planRows) { if (o === r) continue; const os = o.start, oe = o.start + o.dur * 60000; if (oe > s && os < e) return "他のタスクと重なっています"; }
+    const inFree = freeWindows.some((w) => w.start <= s && w.end >= e);
+    if (!inFree) return "空き時間の外です";
+    return "";
+  }
+
+  /* =========================================================
+   * Google カレンダー読み込み（閲覧のみ）
+   * ======================================================= */
   async function getToken() {
     if (!window.DandoriCloud) throw new Error("同期モジュール（sync.js）が読み込まれていません。");
     return await window.DandoriCloud.getGoogleToken(SCOPE);
   }
-
-  function savePending(action) {
-    try {
-      localStorage.setItem(PENDING_KEY, JSON.stringify({
-        action,
-        weekOffset,
-        prefs,
-        manualText,
-        selected: selectedIds ? Array.from(selectedIds) : null,
-        plan,
-      }));
-    } catch (e) { /* ignore */ }
+  function savePending() {
+    try { localStorage.setItem(PENDING_KEY, JSON.stringify({ viewMode, anchor: anchor.getTime() })); } catch (e) { /* ignore */ }
   }
-
-  function handleAuthError(e, action) {
+  function handleAuthError(e) {
     if (e && e.redirectRequired && typeof e.redirect === "function") {
-      // 作業状態を保存してから画面遷移ログインへ（復帰後に自動で続きを実行）
-      savePending(action);
+      savePending();
       setStatus("Googleのログイン画面に移動します…");
-      e.redirect().catch((err) => {
-        try { localStorage.removeItem(PENDING_KEY); } catch (_) { /* ignore */ }
-        setStatus("ログインに失敗：" + msg(err), true);
-      });
+      e.redirect().catch((err) => { try { localStorage.removeItem(PENDING_KEY); } catch (_) {} setStatus("ログインに失敗：" + msg(err), true); });
       return;
     }
     const code = (e && e.code) || "";
-    if (/popup-closed-by-user|cancelled-popup-request/i.test(code)) {
-      setStatus("ログインがキャンセルされました。", true);
-    } else if (/user-mismatch/i.test(code)) {
-      setStatus("同期でログイン中と同じGoogleアカウントを選んでください。", true);
-    } else {
-      setStatus("Google認証に失敗：" + msg(e), true);
-    }
+    if (/popup-closed-by-user|cancelled-popup-request/i.test(code)) setStatus("ログインがキャンセルされました。", true);
+    else setStatus("Google認証に失敗：" + msg(e), true);
   }
-
   function apiErrText(status, j) {
     const gm = (j && j.error && j.error.message) || "";
-    if (status === 401) {
-      if (window.DandoriCloud) window.DandoriCloud.clearGoogleToken();
-      return "認証の有効期限が切れました（401）。もう一度ボタンを押してください。";
-    }
+    if (status === 401) { if (window.DandoriCloud) window.DandoriCloud.clearGoogleToken(); return "認証の有効期限が切れました（401）。もう一度お試しください。"; }
     if (status === 403) {
-      if (/not been used|disabled|accessNotConfigured/i.test(gm)) {
-        return "Google Calendar API が有効になっていません（初回のみの設定。下の「うまくいかない時」参照）。";
-      }
-      if (/insufficient/i.test(gm)) {
-        if (window.DandoriCloud) window.DandoriCloud.clearGoogleToken();
-        return "カレンダーへの権限が足りません。もう一度ボタンを押して、カレンダーへのアクセスを許可してください。";
-      }
+      if (/not been used|disabled|accessNotConfigured/i.test(gm)) return "Google Calendar API が有効になっていません（初回のみの設定。下の「うまくいかない時」参照）。";
+      if (/insufficient/i.test(gm)) { if (window.DandoriCloud) window.DandoriCloud.clearGoogleToken(); return "カレンダー閲覧の権限が足りません。もう一度押して、閲覧を許可してください。"; }
       return "アクセスが拒否されました（403）：" + gm;
     }
     return "エラー（" + status + "）：" + (gm || "不明");
   }
 
-  /* ---------- Google カレンダーから予定を読み込む ---------- */
+  // 表示中ビューをカバーする範囲を読み込む（週なら±その週＋数週、月なら前後含む）
   async function loadFromGoogle() {
     const el = q("#gc-load-state");
     if (el) { el.textContent = "読み込み中…"; el.classList.remove("is-error"); }
     let token;
     try { token = await getToken(); }
-    catch (e) { if (el) el.textContent = ""; handleAuthError(e, "load"); return; }
+    catch (e) { if (el) el.textContent = ""; handleAuthError(e); return; }
     try {
-      const ws = weekStartDate(), we = addDays(ws, spanDays());
+      // 今日を含む週の頭から8週間ぶんを一括取得（週/月ナビをカバー）
+      const start = startOfWeek(new Date());
+      const end = addDays(start, 8 * 7);
       const url = API + "/calendars/primary/events?" + new URLSearchParams({
-        timeMin: ws.toISOString(),
-        timeMax: we.toISOString(),
-        singleEvents: "true",
-        orderBy: "startTime",
-        maxResults: "250",
+        timeMin: start.toISOString(), timeMax: end.toISOString(),
+        singleEvents: "true", orderBy: "startTime", maxResults: "2500",
       });
       const res = await fetch(url, { headers: { Authorization: "Bearer " + token } });
-      if (!res.ok) {
-        const j = await res.json().catch(() => null);
-        if (el) { el.textContent = apiErrText(res.status, j); el.classList.add("is-error"); }
-        return;
-      }
+      if (!res.ok) { const j = await res.json().catch(() => null); if (el) { el.textContent = apiErrText(res.status, j); el.classList.add("is-error"); } return; }
       const data = await res.json();
-      gcalBusy = (data.items || [])
-        .filter((ev) => ev.status !== "cancelled")
-        .map((ev) => {
-          if (ev.start && ev.start.dateTime) {
-            return {
-              start: new Date(ev.start.dateTime), end: new Date(ev.end.dateTime),
-              title: ev.summary || "予定", src: "gcal",
-              free: ev.transparency === "transparent",
-            };
-          }
-          if (ev.start && ev.start.date) {
-            return { allDay: true, day: ev.start.date, title: ev.summary || "終日", src: "gcal" };
-          }
-          return null;
-        })
-        .filter(Boolean);
+      gcalBusy = (data.items || []).filter((ev) => ev.status !== "cancelled").map((ev) => {
+        if (ev.start && ev.start.dateTime) return { start: new Date(ev.start.dateTime).getTime(), end: new Date(ev.end.dateTime).getTime(), title: ev.summary || "予定", free: ev.transparency === "transparent" };
+        if (ev.start && ev.start.date) return { allDay: true, day: ev.start.date, title: ev.summary || "終日" };
+        return null;
+      }).filter(Boolean);
+      cachedRange = { start: start.getTime(), end: end.getTime() };
       const n = gcalBusy.filter((b) => !b.allDay && !b.free).length;
-      const ad = gcalBusy.filter((b) => b.allDay).length;
-      if (el) el.textContent = "読み込みました：" + n + "件" + (ad ? "（＋終日" + ad + "件）" : "");
-      recomputeWarns();
-      renderCalendar();
-      renderPlanArea();
-    } catch (e) {
-      if (el) { el.textContent = "読み込みに失敗：" + msg(e); el.classList.add("is-error"); }
-    }
+      if (el) el.textContent = "予定 " + n + "件を読み込みました（この予定を避けて空き時間に配置します）";
+      renderView();
+    } catch (e) { if (el) { el.textContent = "読み込みに失敗：" + msg(e); el.classList.add("is-error"); } }
   }
 
-  /* ---------- Google カレンダーへ登録 ---------- */
+  /* ---------- .ics 書き出し（任意：別カレンダー等へ手動取込用） ---------- */
   function eventDesc(r) {
-    const lines = [];
-    const g = goalTitle(r.goalId);
+    const lines = []; const g = goalTitle(r.goalId);
     if (g) lines.push("目標: " + g);
     if (r.deadline) lines.push("締切: " + r.deadline);
     if (r.note) lines.push(r.note);
-    lines.push("— 段取り（Dandori）から登録");
+    lines.push("— 段取り（Dandori）");
     return lines.join("\n");
   }
-
-  async function pushToGoogle() {
-    if (!plan || pushing) return;
-    const rows = plan.rows.filter((r) => r.include && !r.done);
-    if (!rows.length) { setStatus("登録するものがありません（すべて登録済みか、チェックが外れています）。"); return; }
-    let token;
-    try { token = await getToken(); }
-    catch (e) { handleAuthError(e, "push"); return; }
-    pushing = true;
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    let ok = 0, fail = 0, i = 0;
-    for (const r of rows) {
-      i++;
-      setStatus("登録中… " + i + "/" + rows.length);
-      const start = new Date(r.day + "T" + r.time + ":00");
-      const end = new Date(start.getTime() + r.dur * 60000);
-      const body = {
-        summary: r.title,
-        description: eventDesc(r),
-        start: { dateTime: toRFC3339(start), timeZone: tz },
-        end: { dateTime: toRFC3339(end), timeZone: tz },
-      };
-      try {
-        const res = await fetch(API + "/calendars/primary/events", {
-          method: "POST",
-          headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (res.ok) { r.done = true; r.error = ""; ok++; }
-        else {
-          const j = await res.json().catch(() => null);
-          r.error = apiErrText(res.status, j);
-          fail++;
-          if (res.status === 401) break; // トークン切れ：以降は再取得後にやり直し
-        }
-      } catch (err) { r.error = "通信エラー：" + msg(err); fail++; }
-    }
-    pushing = false;
-    renderPlanArea();
-    renderCalendar();
-    setStatus(
-      "登録結果：成功 " + ok + "件" + (fail ? "／失敗 " + fail + "件（各行のメッセージを確認）" : "。Googleカレンダーに反映されました。"),
-      fail > 0
-    );
-  }
-
-  /* ---------- .ics 書き出し（Googleが使えない時の代替） ---------- */
-  function icsEsc(s) {
-    return String(s == null ? "" : s)
-      .replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
-  }
-  function icsDate(d) { return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, ""); }
+  function icsEsc(s) { return String(s == null ? "" : s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n"); }
+  function icsDate(ms) { return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, ""); }
   function icsForRows(rows) {
-    const now = icsDate(new Date());
+    const now = icsDate(Date.now());
     const out = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Dandori//JP", "CALSCALE:GREGORIAN"];
     rows.forEach((r, i) => {
-      const start = new Date(r.day + "T" + r.time + ":00");
-      const end = new Date(start.getTime() + r.dur * 60000);
-      out.push(
-        "BEGIN:VEVENT",
-        "UID:dandori-" + now + "-" + i + "@dandori",
-        "DTSTAMP:" + now,
-        "DTSTART:" + icsDate(start),
-        "DTEND:" + icsDate(end),
-        "SUMMARY:" + icsEsc(r.title),
-        "DESCRIPTION:" + icsEsc(eventDesc(r)),
-        "END:VEVENT"
-      );
+      out.push("BEGIN:VEVENT", "UID:dandori-" + now + "-" + i + "@dandori", "DTSTAMP:" + now,
+        "DTSTART:" + icsDate(r.start), "DTEND:" + icsDate(r.start + r.dur * 60000),
+        "SUMMARY:" + icsEsc(r.title), "DESCRIPTION:" + icsEsc(eventDesc(r)), "END:VEVENT");
     });
     out.push("END:VCALENDAR");
     return out.join("\r\n");
   }
   function downloadICS() {
-    if (!plan) return;
-    const rows = plan.rows.filter((r) => r.include);
-    if (!rows.length) { setStatus("保存するものがありません。"); return; }
-    const blob = new Blob([icsForRows(rows)], { type: "text/calendar" });
+    if (!planRows.length) { setStatus("配置したタスクがありません。"); return; }
+    const blob = new Blob([icsForRows(planRows)], { type: "text/calendar" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = "dandori-week-" + ymd(weekStartDate()) + ".ics";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    a.href = url; a.download = "dandori-plan-" + ymd(new Date()) + ".ics";
+    document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setStatus(".ics を保存しました。カレンダーアプリで開く／取り込むと登録されます。");
+    setStatus(".ics を保存しました（任意のカレンダーに取り込めます）。");
   }
 
   /* =========================================================
@@ -467,7 +286,7 @@
     overlay.innerHTML =
       '<div class="modal modal-wide" role="dialog" aria-modal="true">' +
         '<div class="modal-header">' +
-          '<h2>📆 週間予定表 → Google カレンダー</h2>' +
+          '<h2>📆 予定表</h2>' +
           '<button type="button" class="icon-btn" data-gc="close" aria-label="閉じる">×</button>' +
         '</div>' +
         '<div class="modal-body" id="gc-body"></div>' +
@@ -482,30 +301,12 @@
     renderBody();
     overlay.hidden = false;
   }
-  function closePanel() { if (overlay) overlay.hidden = true; }
+  function closePanel() { if (overlay) { overlay.hidden = true; drag = null; } }
+  function setStatus(text, isError) { const el = q("#gc-status"); if (!el) return; el.textContent = text || ""; el.classList.toggle("is-error", !!isError); }
 
-  function setStatus(text, isError) {
-    const el = q("#gc-status");
-    if (!el) return;
-    el.textContent = text || "";
-    el.classList.toggle("is-error", !!isError);
-  }
-
-  function weekOptionsHTML() {
-    const labels = ["今週", "来週", "再来週"];
-    const last = spanDays() - 1; // 期間の最終日（0始まり）
-    let html = "";
-    for (let i = 0; i < 3; i++) {
-      const ws = addDays(mondayOf(new Date()), i * 7);
-      html += '<option value="' + i + '"' + (i === weekOffset ? " selected" : "") + ">" +
-        labels[i] + (last > 6 ? "から" : "") + "（" + mdw(ws) + "〜" + mdw(addDays(ws, last)) + "）</option>";
-    }
-    return html;
-  }
-  function spanOptionsHTML() {
-    return [1, 2].map((n) =>
-      '<option value="' + n + '"' + (n === spanWeeks() ? " selected" : "") + ">" + n + "週間分</option>"
-    ).join("");
+  function rangeLabel() {
+    if (viewMode === "week") { const ws = startOfWeek(anchor); return mdw(ws) + " 〜 " + mdw(addDays(ws, 6)); }
+    const m = startOfMonth(anchor); return m.getFullYear() + "年 " + (m.getMonth() + 1) + "月";
   }
 
   function renderBody() {
@@ -513,308 +314,345 @@
     if (!body) return;
     const durs = [30, 45, 60, 90, 120];
     body.innerHTML =
-      '<p class="sync-sub">未完了タスクを期間内の空き時間に自動で割り当てて予定表を作り、Google カレンダーへ登録します（.ics 保存も可）。<b>1週間分／2週間分</b>を選べます。</p>' +
+      '<p class="sync-sub">Googleカレンダーの予定（灰色）を見ながら、空いている時間を<b>ドラッグ／タップで指定</b>すると、その枠に未完了タスクを<b>自動で配置</b>します。配置したタスク（紫）は<b>ドラッグで移動</b>できます。Googleへは書き込みません（閲覧のみ）。</p>' +
 
-      '<div class="gcal-opts">' +
-        '<div class="field"><label for="gc-week">開始</label><select id="gc-week">' + weekOptionsHTML() + '</select></div>' +
-        '<div class="field"><label for="gc-span">期間</label><select id="gc-span">' + spanOptionsHTML() + '</select></div>' +
-        '<div class="field"><label>作業に使う時間帯</label><div class="gcal-hours">' +
-          '<input type="time" id="gc-ws" value="' + esc(prefs.workStart) + '"> 〜 ' +
-          '<input type="time" id="gc-we" value="' + esc(prefs.workEnd) + '">' +
-          '<label class="gcal-chk"><input type="checkbox" id="gc-weekend"' + (prefs.weekend ? " checked" : "") + '> 土日も使う</label>' +
-        '</div></div>' +
-        '<div class="field"><label for="gc-defdur">見積なしタスクの所要</label><select id="gc-defdur">' +
-          durs.map((d) => '<option value="' + d + '"' + (d === prefs.defDur ? " selected" : "") + ">" + d + "分</option>").join("") +
-        '</select></div>' +
+      '<div class="gcal-toolbar">' +
+        '<div class="gcal-nav">' +
+          '<button class="btn btn-ghost gc-icon" id="gc-prev" aria-label="前へ">‹</button>' +
+          '<button class="btn btn-ghost" id="gc-today">今日</button>' +
+          '<button class="btn btn-ghost gc-icon" id="gc-next" aria-label="次へ">›</button>' +
+          '<span class="gcal-range" id="gc-range">' + esc(rangeLabel()) + '</span>' +
+        '</div>' +
+        '<div class="gcal-viewtoggle">' +
+          '<button class="gc-vt' + (viewMode === "week" ? " is-active" : "") + '" data-view="week">週</button>' +
+          '<button class="gc-vt' + (viewMode === "month" ? " is-active" : "") + '" data-view="month">月</button>' +
+        '</div>' +
       '</div>' +
 
-      '<h3 class="gcal-step">1. 期間内の予定を取り込む</h3>' +
-      '<div class="sync-actions">' +
-        '<button id="gc-load" class="btn btn-ghost">📥 Googleカレンダーから読み込む</button>' +
-        '<span id="gc-load-state" class="sync-status"></span>' +
-      '</div>' +
-      '<div class="field"><label for="gc-busy-text">手で追加（1行1件。<b>2週間分をまとめて入力できます</b>）<br>' +
-        '例：「7/7 13:00-14:00 定例会議」「7/14 9:00-10:00 通院」。曜日指定（「金 18:00-19:00 送迎」）は<b>期間内で最初に来るその曜日</b>になります。2週目の予定は日付で入力してください。</label>' +
-        '<textarea id="gc-busy-text" rows="4" placeholder="7/7 13:00-14:00 定例会議&#10;7/14 9:00-10:00 通院">' + esc(manualText) + '</textarea>' +
-        '<div id="gc-busy-err" class="sync-status is-error"></div>' +
-      '</div>' +
-
-      '<h3 class="gcal-step">2. タスクを選んで空き時間に割り当てる</h3>' +
-      '<div id="gc-task-list" class="gcal-task-list"></div>' +
-      '<div class="sync-actions">' +
-        '<button id="gc-make" class="btn btn-primary">🧮 空き時間に自動割り当て</button>' +
-        '<span id="gc-make-state" class="sync-status"></span>' +
+      '<div class="gcal-toolbar gcal-toolbar-2">' +
+        '<div class="sync-actions" style="margin:0">' +
+          '<button id="gc-load" class="btn btn-ghost">📥 Google予定を読み込む</button>' +
+          '<span id="gc-load-state" class="sync-status"></span>' +
+        '</div>' +
+        '<details class="gcal-settings"><summary>表示設定</summary>' +
+          '<div class="gcal-hours">表示時間帯 ' +
+            '<input type="time" id="gc-ds" value="' + esc(prefs.dayStart) + '"> 〜 ' +
+            '<input type="time" id="gc-de" value="' + esc(prefs.dayEnd) + '">' +
+            '　見積なしの所要 <select id="gc-defdur">' +
+              durs.map((d) => '<option value="' + d + '"' + (d === prefs.defDur ? " selected" : "") + ">" + d + "分</option>").join("") +
+            '</select>' +
+          '</div>' +
+        '</details>' +
       '</div>' +
 
-      '<h3 class="gcal-step">3. 予定表</h3>' +
-      '<div id="gc-cal" class="gcal-cal"></div>' +
-      '<div id="gc-plan-area"></div>' +
-      '<p id="gc-status" class="sync-status"></p>' +
+      '<div id="gc-cal"></div>' +
+
+      '<div class="gcal-plan-controls">' +
+        '<details class="gcal-tasks-wrap"><summary id="gc-tasks-sum">配置するタスクを選ぶ</summary>' +
+          '<div id="gc-task-list" class="gcal-task-list"></div>' +
+        '</details>' +
+        '<div class="sync-actions">' +
+          '<button id="gc-auto" class="btn btn-primary">🧮 空き時間にタスクを自動配置</button>' +
+          '<button id="gc-clear-plan" class="btn btn-ghost">配置をクリア</button>' +
+          '<button id="gc-clear-free" class="btn btn-ghost">空き時間をクリア</button>' +
+          '<button id="gc-ics" class="link-btn">📥 .icsで保存（任意）</button>' +
+        '</div>' +
+        '<div id="gc-unplaced"></div>' +
+        '<p id="gc-status" class="sync-status"></p>' +
+      '</div>' +
 
       '<details class="sync-help"><summary>うまくいかない時（初回設定・ヘルプ）</summary>' +
         '<ul class="sync-steps">' +
-          '<li>「読み込む」「登録」には Google ログインと<b>カレンダーへのアクセス許可</b>が必要です（初回に許可画面が出ます）。</li>' +
-          '<li><b>「Google Calendar API が有効になっていません」</b>と出る場合：<a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project=dandori-dddf0" target="_blank" rel="noopener">Google Cloud Console</a> でプロジェクト <code>dandori-dddf0</code> の Google Calendar API を有効化してください（1回だけ）。</li>' +
-          '<li><b>「このアプリは確認されていません」</b>画面が出たら「詳細」→「（安全でないページに）移動」で続行できます。<b>アクセスがブロック</b>される場合は、OAuth同意画面（テストモード）の<b>テストユーザー</b>に自分のGmailを追加してください。</li>' +
-          '<li>ポップアップがブロックされる環境（iPhoneのホーム画面アプリ等）では自動で画面遷移ログインに切り替わり、戻ってきたら続きから再開します。</li>' +
-          '<li>Googleに接続できない場合は「📥 .icsで保存」→ カレンダーアプリに取り込みでも登録できます。</li>' +
+          '<li><b>空き時間の作り方</b>：週表示でカレンダーの空欄を上下にドラッグ（スマホは長めにスワイプ）すると緑の枠ができます。枠をタップすると削除。月表示で日付をタップするとその週に移動します。</li>' +
+          '<li><b>Google予定の読み込み</b>：Googleログインと<b>カレンダーの閲覧許可</b>が必要です（書き込みはしません）。初回に許可画面が出ます。</li>' +
+          '<li><b>「Google Calendar API が有効になっていません」</b>：<a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project=dandori-dddf0" target="_blank" rel="noopener">Google Cloud Console</a> でプロジェクト <code>dandori-dddf0</code> の Calendar API を有効化（1回だけ）。</li>' +
+          '<li><b>「このアプリは確認されていません」</b>→「詳細」→「移動」。<b>ブロック</b>される場合は OAuth 同意画面のテストユーザーに自分のGmailを追加。</li>' +
+          '<li>Google予定を読み込まなくても、空き時間を手で指定すれば自動配置は使えます。</li>' +
         '</ul>' +
       '</details>';
 
+    wireToolbar();
     renderTaskList();
-    renderCalendar();
-    renderPlanArea();
-    wireBody();
+    renderView();
   }
 
-  function wireBody() {
-    const onRangeChange = (msgText) => {
-      gcalBusy = null;   // 期間が変われば予定も読み直し
-      plan = null;       // 割り当ても作り直し
-      const el = q("#gc-load-state");
-      if (el) { el.textContent = msgText; el.classList.remove("is-error"); }
-      // 開始週の選択肢ラベルは期間で変わるので付け替える
-      const wsel = q("#gc-week");
-      if (wsel) { const v = wsel.value; wsel.innerHTML = weekOptionsHTML(); wsel.value = v; }
-      applyManualText();
-      renderCalendar();
-      renderPlanArea();
-    };
-    q("#gc-week").addEventListener("change", (e) => {
-      weekOffset = Number(e.target.value) || 0;
-      onRangeChange("開始を変えました。必要なら読み込み直してください。");
-    });
-    q("#gc-span").addEventListener("change", (e) => {
-      prefs.spanWeeks = Number(e.target.value) === 2 ? 2 : 1;
-      savePrefs();
-      onRangeChange("期間を変えました。必要なら読み込み直してください。");
-    });
-    q("#gc-ws").addEventListener("change", (e) => { prefs.workStart = e.target.value || "09:00"; savePrefs(); renderCalendar(); });
-    q("#gc-we").addEventListener("change", (e) => { prefs.workEnd = e.target.value || "18:00"; savePrefs(); renderCalendar(); });
-    q("#gc-weekend").addEventListener("change", (e) => { prefs.weekend = !!e.target.checked; savePrefs(); });
+  function wireToolbar() {
+    q("#gc-prev").addEventListener("click", () => { anchor = viewMode === "week" ? addDays(anchor, -7) : addMonths(anchor, -1); afterNav(); });
+    q("#gc-next").addEventListener("click", () => { anchor = viewMode === "week" ? addDays(anchor, 7) : addMonths(anchor, 1); afterNav(); });
+    q("#gc-today").addEventListener("click", () => { anchor = startOfDay(new Date()); afterNav(); });
+    overlay.querySelectorAll(".gc-vt").forEach((b) => b.addEventListener("click", () => {
+      viewMode = b.dataset.view; afterNav();
+    }));
+    q("#gc-load").addEventListener("click", loadFromGoogle);
+    q("#gc-ds").addEventListener("change", (e) => { prefs.dayStart = e.target.value || "07:00"; savePrefs(); renderView(); });
+    q("#gc-de").addEventListener("change", (e) => { prefs.dayEnd = e.target.value || "22:00"; savePrefs(); renderView(); });
     q("#gc-defdur").addEventListener("change", (e) => { prefs.defDur = Number(e.target.value) || 60; savePrefs(); });
 
-    q("#gc-load").addEventListener("click", loadFromGoogle);
-
-    let busyTimer = null;
-    q("#gc-busy-text").addEventListener("input", (e) => {
-      manualText = e.target.value;
-      clearTimeout(busyTimer);
-      busyTimer = setTimeout(() => { applyManualText(); renderCalendar(); }, 300);
-    });
-
     q("#gc-task-list").addEventListener("change", (e) => {
-      const cb = e.target.closest("input[data-tid]");
-      if (!cb) return;
+      const cb = e.target.closest("input[data-tid]"); if (!cb) return;
       if (cb.checked) selectedIds.add(cb.dataset.tid); else selectedIds.delete(cb.dataset.tid);
     });
-
-    q("#gc-make").addEventListener("click", makePlan);
-
-    q("#gc-plan-area").addEventListener("change", onPlanEdit);
-    q("#gc-plan-area").addEventListener("click", (e) => {
-      const t = e.target;
-      if (t && t.id === "gc-push") pushToGoogle();
-      if (t && t.id === "gc-ics") downloadICS();
+    q("#gc-auto").addEventListener("click", () => {
+      if (!freeWindows.length) { setStatus("先にカレンダーで空き時間を指定してください（空欄をドラッグ）。", true); return; }
+      const n = selectedIds.size;
+      if (!n) { setStatus("配置するタスクが選ばれていません。", true); return; }
+      autoPlace();
+      setStatus("配置しました：" + planRows.length + "件" + (lastUnplaced.length ? "／入りきらず " + lastUnplaced.length + "件" : "") + "。紫のブロックはドラッグで動かせます。");
+      renderView();
     });
-
-    applyManualText();
+    q("#gc-clear-plan").addEventListener("click", () => { planRows = []; lastUnplaced = []; savePlan(); setStatus("配置をクリアしました。"); renderView(); });
+    q("#gc-clear-free").addEventListener("click", () => { freeWindows = []; saveFree(); setStatus("空き時間の指定をクリアしました。"); renderView(); });
+    q("#gc-ics").addEventListener("click", downloadICS);
   }
-
-  function applyManualText() {
-    const r = parseBusyLines(manualText, weekStartDate());
-    manualBusy = r.events;
-    const el = q("#gc-busy-err");
-    if (el) el.textContent = r.errors.length ? "解釈できない行があります：" + r.errors.join(", ") + "行目" : "";
-    recomputeWarns();
+  function afterNav() {
+    // ビュー切替でトグルの見た目・範囲ラベルを更新
+    overlay.querySelectorAll(".gc-vt").forEach((b) => b.classList.toggle("is-active", b.dataset.view === viewMode));
+    const rl = q("#gc-range"); if (rl) rl.textContent = rangeLabel();
+    renderView();
   }
 
   function renderTaskList() {
-    const el = q("#gc-task-list");
-    if (!el) return;
+    const el = q("#gc-task-list"); if (!el) return;
     const tasks = activeTasksSorted();
-    if (!tasks.length) {
-      el.innerHTML = '<p class="sync-sub">未完了のタスクがありません。先に「＋ タスクを追加」で作成してください。</p>';
-      return;
-    }
+    const sum = q("#gc-tasks-sum"); if (sum) sum.textContent = "配置するタスクを選ぶ（" + selectedIds.size + "/" + tasks.length + "）";
+    if (!tasks.length) { el.innerHTML = '<p class="sync-sub">未完了のタスクがありません。先に「＋ タスクを追加」で作成してください。</p>'; return; }
     el.innerHTML = tasks.map((t) => {
       const meta = [];
       meta.push(t.effort ? t.effort + "分" : "見積なし→" + prefs.defDur + "分");
       if (t.deadline) meta.push("締切 " + t.deadline.slice(5).replace("-", "/"));
-      const g = goalTitle(t.goalId);
-      if (g) meta.push(g);
-      return '<label class="gcal-task-item">' +
-        '<input type="checkbox" data-tid="' + esc(t.id) + '"' + (selectedIds.has(t.id) ? " checked" : "") + '>' +
-        '<span>' + (t.pinned ? "🔥 " : "") + esc(t.title) + ' <span class="meta">（' + esc(meta.join("・")) + '）</span></span>' +
-        '</label>';
+      const g = goalTitle(t.goalId); if (g) meta.push(g);
+      return '<label class="gcal-task-item"><input type="checkbox" data-tid="' + esc(t.id) + '"' + (selectedIds.has(t.id) ? " checked" : "") + '>' +
+        '<span>' + (t.pinned ? "🔥 " : "") + esc(t.title) + ' <span class="meta">（' + esc(meta.join("・")) + '）</span></span></label>';
     }).join("");
   }
 
-  function makePlan() {
-    applyManualText();
-    const tasks = activeTasksSorted().filter((t) => selectedIds.has(t.id));
-    const stateEl = q("#gc-make-state");
-    if (!tasks.length) {
-      if (stateEl) stateEl.textContent = "タスクが選ばれていません。";
-      return;
-    }
-    plan = computePlan(tasks, {
-      weekStart: weekStartDate(),
-      spanDays: spanDays(),
-      workStart: prefs.workStart,
-      workEnd: prefs.workEnd,
-      weekend: prefs.weekend,
-      defDur: prefs.defDur,
-      busy: allBusy(),
-    });
-    if (stateEl) {
-      stateEl.textContent = "割り当て：" + plan.rows.length + "件" +
-        (plan.unplaced.length ? "／入りきらず " + plan.unplaced.length + "件" : "");
-    }
-    setStatus("");
-    renderCalendar();
-    renderPlanArea();
+  function renderView() {
+    if (viewMode === "month") renderMonth();
+    else renderWeek();
+    renderUnplaced();
   }
 
-  function onPlanEdit(e) {
-    const row = e.target.closest(".gcal-row");
-    if (!row || !plan) return;
-    const r = plan.rows[Number(row.dataset.i)];
-    if (!r) return;
-    if (e.target.classList.contains("gc-r-inc")) r.include = !!e.target.checked;
-    if (e.target.classList.contains("gc-r-day")) r.day = e.target.value;
-    if (e.target.classList.contains("gc-r-time")) r.time = e.target.value || r.time;
-    if (e.target.classList.contains("gc-r-dur")) r.dur = Math.max(5, Number(e.target.value) || r.dur);
-    recomputeWarns();
-    renderCalendar();
-    renderPlanArea();
+  function renderUnplaced() {
+    const el = q("#gc-unplaced"); if (!el) return;
+    if (!lastUnplaced.length) { el.innerHTML = ""; return; }
+    el.innerHTML = '<div class="gcal-unplaced"><b>入りきらなかったタスク：</b><ul>' +
+      lastUnplaced.map((u) => "<li>" + esc(u.title) + "（" + u.dur + "分）</li>").join("") +
+      "</ul>空き時間を増やす・タスクを分解する、などで再度お試しください。</div>";
   }
 
-  function renderPlanArea() {
-    const el = q("#gc-plan-area");
-    if (!el) return;
-    if (!plan) { el.innerHTML = ""; return; }
-    const ws = weekStartDate();
-    const dayOpts = [];
-    for (let i = 0; i < spanDays(); i++) {
-      const d = addDays(ws, i);
-      dayOpts.push({ v: ymd(d), label: mdw(d) });
-    }
-    let html = plan.rows.map((r, i) => {
-      const dis = r.done ? " disabled" : "";
-      return '<div class="gcal-row' + (r.done ? " is-done" : "") + '" data-i="' + i + '">' +
-        '<input type="checkbox" class="gc-r-inc"' + (r.include ? " checked" : "") + dis + '>' +
-        '<span class="gcal-row-title">' + (r.done ? "✅ " : r.pinned ? "🔥 " : "") + esc(r.title) + '</span>' +
-        '<select class="gc-r-day"' + dis + '>' +
-          dayOpts.map((o) => '<option value="' + o.v + '"' + (o.v === r.day ? " selected" : "") + ">" + o.label + "</option>").join("") +
-        '</select>' +
-        '<input type="time" class="gc-r-time" value="' + esc(r.time) + '"' + dis + '>' +
-        '<input type="number" class="gc-r-dur gcal-dur" min="5" step="5" value="' + r.dur + '"' + dis + '><span class="gcal-unit">分</span>' +
-        (r.warn && !r.done ? '<span class="gcal-warn">⚠ ' + esc(r.warn) + '</span>' : "") +
-        (r.error ? '<span class="gcal-err">' + esc(r.error) + '</span>' : "") +
-        '</div>';
-    }).join("");
-    if (plan.unplaced.length) {
-      html += '<div class="gcal-unplaced"><b>入りきらなかったタスク：</b><ul>' +
-        plan.unplaced.map((u) => "<li>" + esc(u.title) + "（" + u.dur + "分）— " + esc(u.reason) + "</li>").join("") +
-        "</ul>手入力の予定を減らす・時間帯を広げる・土日を使う・タスクを分解する、などで再度お試しください。</div>";
-    }
-    html += '<div class="sync-actions">' +
-      '<button id="gc-push" class="btn btn-primary"' + (pushing ? " disabled" : "") + '>📤 Googleカレンダーへ登録</button>' +
-      '<button id="gc-ics" class="btn btn-ghost">📥 .icsで保存</button>' +
-    '</div>';
-    el.innerHTML = html;
-  }
+  /* ---------- 週表示 ---------- */
+  // 指定日の 0:00(ms) を返す（週の i 日目）
+  function weekDayMs(i) { return startOfWeek(anchor).getTime() + i * 86400000; }
 
-  /* ---------- アプリ内の週カレンダー描画 ---------- */
-  function renderCalendar() {
-    const el = q("#gc-cal");
-    if (!el) return;
-    const ws = weekStartDate();
-    const nWeeks = spanWeeks();
-    const we = addDays(ws, nWeeks * 7);
-    const busyAll = ((gcalBusy || []).concat(manualBusy)).filter((b) => !b.allDay);
-    const rows = (plan && plan.rows.filter((r) => r.include)) || [];
-
-    // 表示レンジ（分）：稼働時間帯を基本に、期間内ではみ出す予定があれば広げる
-    let sMin = parseHM(prefs.workStart);
-    let eMin = parseHM(prefs.workEnd);
-    const consider = (s, e) => {
-      if (e <= ws || s >= we) return;
-      sMin = Math.min(sMin, minOfDay(s));
-      const em = minOfDay(e);
-      eMin = Math.max(eMin, em === 0 ? 24 * 60 : em);
+  function computeDisplayRange() {
+    let sMin = parseHM(prefs.dayStart), eMin = parseHM(prefs.dayEnd);
+    const ws = startOfWeek(anchor).getTime(), we = ws + 7 * 86400000;
+    const consider = (a, b) => {
+      if (b <= ws || a >= we) return;
+      sMin = Math.min(sMin, minOfDay(a));
+      const em = minOfDay(b) === 0 && b > a ? 24 * 60 : minOfDay(b);
+      eMin = Math.max(eMin, em);
     };
-    busyAll.forEach((b) => consider(b.start, b.end));
-    rows.forEach((r) => {
-      const s = new Date(r.day + "T" + r.time + ":00");
-      consider(s, new Date(s.getTime() + r.dur * 60000));
-    });
+    gcalBusy.forEach((b) => { if (!b.allDay) consider(b.start, b.end); });
+    freeWindows.forEach((w) => consider(w.start, w.end));
+    planRows.forEach((r) => consider(r.start, r.start + r.dur * 60000));
     sMin = Math.max(0, Math.floor(sMin / 60) * 60);
     eMin = Math.min(24 * 60, Math.ceil(eMin / 60) * 60);
     if (eMin - sMin < 4 * 60) eMin = Math.min(24 * 60, sMin + 4 * 60);
+    return { sMin, eMin };
+  }
+
+  function blockHTML(topPx, hPx, cls, label, title, extra) {
+    return '<div class="gcal-block ' + cls + '" style="top:' + topPx.toFixed(1) + 'px;height:' + Math.max(hPx, 11).toFixed(1) + 'px"' +
+      (extra || "") + ' title="' + esc(title) + '">' + esc(label) + '</div>';
+  }
+
+  function renderWeek() {
+    const el = q("#gc-cal"); if (!el) return;
+    const { sMin, eMin } = computeDisplayRange();
     const bodyH = (eMin - sMin) / 60 * HOUR_PX;
+    const todayY = ymd(new Date());
 
-    const blockHTML = (top, h, cls, label, title) =>
-      '<div class="gcal-block ' + cls + '" style="top:' + top.toFixed(1) + 'px;height:' + Math.max(h, 12).toFixed(1) + 'px" title="' + esc(title) + '">' + esc(label) + '</div>';
-
-    // 時刻軸（週ごとに再掲）
     let axis = "";
-    for (let m = sMin; m <= eMin; m += 60) {
-      axis += '<div class="gcal-hour-label" style="top:' + (((m - sMin) / 60) * HOUR_PX) + 'px">' + Math.floor(m / 60) + ':00</div>';
-    }
-    const axisCol =
-      '<div class="gcal-col gcal-axis"><div class="gcal-col-head"></div>' +
-      '<div class="gcal-col-body" style="height:' + bodyH + 'px">' + axis + '</div></div>';
+    for (let m = sMin; m <= eMin; m += 60) axis += '<div class="gcal-hour-label" style="top:' + (((m - sMin) / 60) * HOUR_PX) + 'px">' + Math.floor(m / 60) + ':00</div>';
+    const axisCol = '<div class="gcal-col gcal-axis"><div class="gcal-col-head"></div><div class="gcal-col-body" style="height:' + bodyH + 'px">' + axis + '</div></div>';
 
-    const todayYmd = ymd(new Date());
+    const topOf = (ms) => (minOfDay(ms) - sMin) / 60 * HOUR_PX;
 
-    // 1日分の列を作る
-    function dayColHTML(d) {
-      const d0 = new Date(d);
-      const d1 = addDays(d, 1);
-      const dYmd = ymd(d);
+    let cols = axisCol;
+    for (let i = 0; i < 7; i++) {
+      const d0 = weekDayMs(i), d1 = d0 + 86400000, dY = ymd(d0);
       let blocks = "";
-      for (const b of busyAll) {
-        const s = b.start < d0 ? d0 : b.start;
-        const e = b.end > d1 ? d1 : b.end;
-        if (e <= s || ymd(s) !== dYmd) continue;
-        const top = (minOfDay(s) - sMin) / 60 * HOUR_PX;
-        const h = (e - s) / 3600000 * HOUR_PX;
-        const label = p2(s.getHours()) + ":" + p2(s.getMinutes()) + " " + b.title;
-        blocks += blockHTML(top, h, b.src === "manual" ? "b-manual" : "b-busy" + (b.free ? " b-free" : ""), label, label + (b.free ? "（空き扱い）" : ""));
-      }
-      rows.forEach((r) => {
-        if (r.day !== dYmd) return;
-        const s = new Date(r.day + "T" + r.time + ":00");
-        const top = (minOfDay(s) - sMin) / 60 * HOUR_PX;
-        const h = r.dur / 60 * HOUR_PX;
-        const label = r.time + " " + r.title;
-        blocks += blockHTML(top, h, "b-task" + (r.done ? " is-done" : "") + (r.warn ? " is-warn" : ""), label, label);
+      // Google 既存予定（灰）
+      gcalBusy.forEach((b) => {
+        if (b.allDay) return;
+        const s = Math.max(b.start, d0), e = Math.min(b.end, d1);
+        if (e <= s || ymd(s) !== dY) return;
+        blocks += blockHTML(topOf(s), (e - s) / 3600000 * HOUR_PX, "b-busy" + (b.free ? " b-free-ev" : ""), fmtTime(s) + " " + b.title, fmtTime(s) + " " + b.title);
       });
-      const allday = (gcalBusy || []).filter((b) => b.allDay && b.day === dYmd);
-      const adHtml = allday.length
-        ? '<div class="gcal-allday" title="' + esc(allday.map((a) => a.title).join(" / ")) + '">終日: ' + esc(allday.map((a) => a.title).join(" / ")) + '</div>'
-        : "";
-      return '<div class="gcal-col' + (dYmd === todayYmd ? " is-today" : "") + '">' +
-        '<div class="gcal-col-head">' + mdw(d) + adHtml + '</div>' +
-        '<div class="gcal-col-body" style="height:' + bodyH + 'px">' + blocks + '</div></div>';
+      // 空き時間枠（緑）
+      freeWindows.forEach((w, wi) => {
+        const s = Math.max(w.start, d0), e = Math.min(w.end, d1);
+        if (e <= s || ymd(s) !== dY) return;
+        blocks += blockHTML(topOf(s), (e - s) / 3600000 * HOUR_PX, "b-free-win", "空き " + fmtTime(s) + "–" + fmtTime(e), "空き時間（タップで削除）", ' data-fi="' + wi + '"');
+      });
+      // 配置タスク（紫）
+      planRows.forEach((r, ri) => {
+        const s = r.start, e = r.start + r.dur * 60000;
+        if (ymd(s) !== dY) return;
+        const warn = rowWarn(r);
+        blocks += blockHTML(topOf(s), r.dur / 60 * HOUR_PX, "b-task" + (warn ? " is-warn" : ""), fmtTime(s) + " " + r.title, fmtTime(s) + " " + r.title + (warn ? "（" + warn + "）" : ""), ' data-ri="' + ri + '"');
+      });
+      // ドラッグ中プレビュー（空き時間の作成）
+      if (drag && drag.type === "draw" && drag.ymd === dY) {
+        const a = Math.min(drag.startMin, drag.curMin), b = Math.max(drag.startMin, drag.curMin);
+        blocks += '<div class="gcal-block b-free-preview" style="top:' + ((a - sMin) / 60 * HOUR_PX) + 'px;height:' + Math.max((b - a) / 60 * HOUR_PX, 11) + 'px">空き ' + p2(Math.floor(a / 60)) + ":" + p2(a % 60) + "–" + p2(Math.floor(b / 60)) + ":" + p2(b % 60) + '</div>';
+      }
+      const allday = gcalBusy.filter((b) => b.allDay && b.day === dY);
+      const adHtml = allday.length ? '<div class="gcal-allday" title="' + esc(allday.map((a) => a.title).join(" / ")) + '">終日: ' + esc(allday.map((a) => a.title).join(" / ")) + '</div>' : "";
+      cols += '<div class="gcal-col' + (dY === todayY ? " is-today" : "") + '">' +
+        '<div class="gcal-col-head">' + mdw(d0) + adHtml + '</div>' +
+        '<div class="gcal-col-body" data-ymd="' + dY + '" data-dayms="' + d0 + '" style="height:' + bodyH + 'px;touch-action:none">' + blocks + '</div></div>';
     }
 
-    // 週ごとにグリッドを縦に積む（2週間分でも横に広がりすぎない）
-    let gridsHTML = "";
-    for (let w = 0; w < nWeeks; w++) {
-      const wStart = addDays(ws, w * 7);
-      let cols = axisCol;
-      for (let i = 0; i < 7; i++) cols += dayColHTML(addDays(wStart, i));
-      const wLabel = nWeeks > 1
-        ? '<div class="gcal-week-label">' + (w + 1) + '週目（' + mdw(wStart) + '〜' + mdw(addDays(wStart, 6)) + '）</div>'
-        : "";
-      gridsHTML += wLabel + '<div class="gcal-cal-scroll"><div class="gcal-cal-grid">' + cols + '</div></div>';
-    }
+    el.innerHTML =
+      '<div class="gcal-legend"><span class="lg lg-busy"></span>Googleの予定　<span class="lg lg-free"></span>空き時間（ドラッグで作成／タップで削除）　<span class="lg lg-task"></span>配置したタスク（ドラッグで移動）</div>' +
+      '<div class="gcal-cal-scroll"><div class="gcal-cal-grid gcal-week">' + cols + '</div></div>';
 
-    el.innerHTML = gridsHTML +
-      '<div class="gcal-legend"><span class="lg lg-busy"></span>Googleカレンダーの予定　<span class="lg lg-manual"></span>手入力の予定　<span class="lg lg-task"></span>割り当てたタスク</div>';
+    // ドラッグ座標系を記録
+    render.startMin = sMin;
+    const bodies = Array.from(el.querySelectorAll(".gcal-col-body[data-ymd]"));
+    render.cols = bodies.map((b) => ({ ymd: b.dataset.ymd, dayms: Number(b.dataset.dayms), el: b }));
+    wireWeekPointer(el);
+  }
+
+  /* ---------- 週表示のポインタ操作（ドラッグ） ---------- */
+  function colFromX(x) {
+    let best = null, bestDist = Infinity;
+    for (const c of render.cols) {
+      const r = c.el.getBoundingClientRect();
+      if (x >= r.left && x <= r.right) return c;
+      const d = x < r.left ? r.left - x : x - r.right;
+      if (d < bestDist) { bestDist = d; best = c; }
+    }
+    return best;
+  }
+  function yToMin(clientY, bodyEl) {
+    const r = bodyEl.getBoundingClientRect();
+    const y = Math.max(0, Math.min(r.height, clientY - r.top));
+    return render.startMin + (y / HOUR_PX) * 60;
+  }
+  function snapMin(m) { return Math.round(m / 15) * 15; }
+
+  function wireWeekPointer(calEl) {
+    const grid = calEl.querySelector(".gcal-week");
+    if (!grid) return;
+    grid.addEventListener("pointerdown", onPointerDown);
+  }
+
+  function onPointerDown(e) {
+    const body = e.target.closest(".gcal-col-body[data-ymd]");
+    if (!body) return;
+    const taskEl = e.target.closest(".gcal-block.b-task");
+    const freeEl = e.target.closest(".gcal-block.b-free-win");
+    if (taskEl) {
+      const ri = Number(taskEl.dataset.ri);
+      const r = planRows[ri];
+      drag = { type: "task", ri, moved: false, grabMin: snapMin(yToMin(e.clientY, body)) - minOfDay(r.start), pid: e.pointerId };
+    } else if (freeEl) {
+      drag = { type: "free", fi: Number(freeEl.dataset.fi), moved: false, pid: e.pointerId };
+    } else {
+      const m = snapMin(yToMin(e.clientY, body));
+      drag = { type: "draw", ymd: body.dataset.ymd, dayms: Number(body.dataset.dayms), startMin: m, curMin: m, moved: false, pid: e.pointerId };
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    e.preventDefault();
+  }
+
+  function onPointerMove(e) {
+    if (!drag) return;
+    if (drag.type === "draw") {
+      const col = colFromX(e.clientX) || render.cols.find((c) => c.ymd === drag.ymd);
+      if (col && col.ymd !== drag.ymd) { drag.ymd = col.ymd; drag.dayms = col.dayms; }
+      const body = (col && col.el) || render.cols[0].el;
+      drag.curMin = snapMin(yToMin(e.clientY, body));
+      if (Math.abs(drag.curMin - drag.startMin) >= 15) drag.moved = true;
+      renderWeek();
+    } else if (drag.type === "task") {
+      const col = colFromX(e.clientX); if (!col) return;
+      const r = planRows[drag.ri];
+      let m = snapMin(yToMin(e.clientY, col.el) - drag.grabMin);
+      m = Math.max(0, Math.min(24 * 60 - r.dur, m));
+      const newStart = col.dayms + m * 60000;
+      if (newStart !== r.start) { r.start = newStart; drag.moved = true; renderWeek(); }
+    }
+  }
+
+  function onPointerUp() {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    if (!drag) return;
+    if (drag.type === "draw") {
+      if (drag.moved) {
+        const a = Math.min(drag.startMin, drag.curMin), b = Math.max(drag.startMin, drag.curMin);
+        if (b - a >= 15) { freeWindows.push({ start: drag.dayms + a * 60000, end: drag.dayms + b * 60000 }); mergeFree(); saveFree(); }
+      }
+      drag = null; renderWeek(); renderUnplaced();
+    } else if (drag.type === "free") {
+      if (!drag.moved) { freeWindows.splice(drag.fi, 1); saveFree(); }
+      drag = null; renderWeek();
+    } else if (drag.type === "task") {
+      if (drag.moved) savePlan();
+      drag = null; renderWeek();
+    }
+  }
+
+  // 重なった/隣接した空き枠をまとめる
+  function mergeFree() {
+    freeWindows.sort((a, b) => a.start - b.start);
+    const out = [];
+    for (const w of freeWindows) {
+      const last = out[out.length - 1];
+      if (last && w.start <= last.end) { last.end = Math.max(last.end, w.end); }
+      else out.push({ start: w.start, end: w.end });
+    }
+    freeWindows = out;
+  }
+
+  /* ---------- 月表示 ---------- */
+  function renderMonth() {
+    const el = q("#gc-cal"); if (!el) return;
+    const first = startOfMonth(anchor);
+    const gridStart = startOfWeek(first);
+    const curMonth = first.getMonth();
+    const todayY = ymd(new Date());
+
+    let head = '<div class="gcal-month-head">' + ["月", "火", "水", "木", "金", "土", "日"].map((w) => "<div>" + w + "</div>").join("") + "</div>";
+    let cells = "";
+    for (let i = 0; i < 42; i++) {
+      const d0 = gridStart.getTime() + i * 86400000, d1 = d0 + 86400000, dY = ymd(d0);
+      const other = new Date(d0).getMonth() !== curMonth;
+      const evs = gcalBusy.filter((b) => !b.allDay && !b.free && b.end > d0 && b.start < d1).length;
+      const freeMin = freeWindows.reduce((acc, w) => acc + Math.max(0, Math.min(w.end, d1) - Math.max(w.start, d0)), 0) / 60000;
+      const tasks = planRows.filter((r) => ymd(r.start) === dY);
+      const chips = tasks.slice(0, 3).map((r) => '<div class="gcal-mchip' + (rowWarn(r) ? " is-warn" : "") + '">' + esc(fmtTime(r.start) + " " + r.title) + "</div>").join("") +
+        (tasks.length > 3 ? '<div class="gcal-mmore">＋' + (tasks.length - 3) + "</div>" : "");
+      cells += '<div class="gcal-mcell' + (other ? " is-other" : "") + (dY === todayY ? " is-today" : "") + (freeMin > 0 ? " has-free" : "") + '" data-ymd="' + dY + '">' +
+        '<div class="gcal-mdate">' + new Date(d0).getDate() +
+          (evs ? '<span class="gcal-mev">●' + evs + '</span>' : "") +
+          (freeMin > 0 ? '<span class="gcal-mfree">空' + (Math.round(freeMin / 6) / 10) + "h</span>" : "") +
+        '</div>' + chips + '</div>';
+    }
+    el.innerHTML =
+      '<div class="gcal-legend gcal-legend-month">日付をタップするとその週（週表示）に移動します。空き時間の作成は週表示で行います。</div>' +
+      '<div class="gcal-month">' + head + '<div class="gcal-month-grid">' + cells + '</div></div>';
+
+    el.querySelector(".gcal-month-grid").addEventListener("click", (e) => {
+      const cell = e.target.closest(".gcal-mcell"); if (!cell) return;
+      anchor = startOfDay(new Date(cell.dataset.ymd + "T00:00:00"));
+      viewMode = "week"; afterNav();
+    });
   }
 
   /* ---------- リダイレクトログインからの復帰 ---------- */
@@ -827,21 +665,12 @@
       }, 400);
     });
   }
-
   function resumePending(p) {
-    weekOffset = p.weekOffset || 0;
-    if (p.prefs) prefs = Object.assign(defaults(), p.prefs);
-    manualText = p.manualText || "";
-    selectedIds = p.selected ? new Set(p.selected) : null;
-    plan = p.plan || null;
+    if (p.viewMode) viewMode = p.viewMode;
+    if (p.anchor) anchor = startOfDay(new Date(p.anchor));
     openPanel();
-    setStatus("ログインから戻りました。確認しています…");
-    waitForToken(12000).then((ok) => {
-      if (!ok) { setStatus("ログインを確認できませんでした。もう一度ボタンを押してください。", true); return; }
-      if (p.action === "push") pushToGoogle();
-      else if (p.action === "load") loadFromGoogle();
-      else setStatus("");
-    });
+    setStatus("ログインから戻りました。予定を読み込んでいます…");
+    waitForToken(12000).then((ok) => { if (ok) loadFromGoogle(); else setStatus("ログインを確認できませんでした。もう一度お試しください。", true); });
   }
 
   /* ---------- 起動 ---------- */
@@ -852,19 +681,13 @@
     try { pending = JSON.parse(localStorage.getItem(PENDING_KEY) || "null"); } catch (e) { /* ignore */ }
     if (pending) {
       try { localStorage.removeItem(PENDING_KEY); } catch (e) { /* ignore */ }
-      try { resumePending(pending); } catch (e) { /* 復帰失敗時は通常起動 */ }
+      try { resumePending(pending); } catch (e) { /* 通常起動 */ }
     }
   }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", start);
-  } else {
-    start();
-  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
 
-  // デバッグ・Node再現テスト用フック
-  window.DandoriGcal = {
-    open: openPanel,
-    _test: { parseBusyLines, computePlan, toRFC3339, icsForRows },
-  };
+  // テスト用フック
+  window.DandoriGcal = { open: openPanel, _test: { computeOpenSlots, placeTasks, cmpTasks, icsForRows, toRFC3339, STEP_MS } };
 
 })();
