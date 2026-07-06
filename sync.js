@@ -304,10 +304,50 @@ async function getGoogleToken(scope) {
   }
 }
 
+/* ---------- 別のGoogleアカウントでのトークン取得 ----------
+ * 同期用アカウント（既定のFirebase app）とは別に、二次的な Firebase app
+ * インスタンスを作ってそこでログインする。こうすると同期のセッションを
+ * 壊さずに任意のGoogleアカウントのアクセストークンを得られる。
+ * Firebase自身のOAuthクライアント＋authDomainを使うので、OAuthクライアントIDの
+ * 入力や生成元設定は不要（承認済みドメインは既に設定済み）。
+ * トークンは短命なので取得のたびにポップアップでアカウントを選ぶ。 */
+let gcalReaderAuth = null;
+async function ensureReaderAuth() {
+  if (gcalReaderAuth) return gcalReaderAuth;
+  await ensureFirebase(); // fb（authモジュール群）とconfigを用意
+  const cfg = loadConfig();
+  const appMod = await import(BASE + "firebase-app.js");
+  let app2;
+  try { app2 = appMod.initializeApp(cfg, "gcalReader"); }
+  catch (e) { app2 = appMod.getApp ? appMod.getApp("gcalReader") : null; if (!app2) throw e; }
+  gcalReaderAuth = fb.getAuth(app2);
+  return gcalReaderAuth;
+}
+async function getOtherAccountToken(scope) {
+  const auth2 = await ensureReaderAuth();
+  const provider = new fb.GoogleAuthProvider();
+  if (scope) provider.addScope(scope);
+  provider.setCustomParameters({ prompt: "select_account" }); // 毎回アカウントを選べる
+  try {
+    const res = await fb.signInWithPopup(auth2, provider);
+    const cred = fb.GoogleAuthProvider.credentialFromResult(res);
+    if (cred && cred.accessToken) return cred.accessToken;
+    throw new Error("アクセストークンを取得できませんでした。");
+  } catch (e) {
+    const code = (e && e.code) || "";
+    if (/popup-blocked|popup-closed|cancelled-popup|operation-not-supported/i.test(code)) {
+      const err = new Error("別アカウントの読み込みにはポップアップの許可が必要です（ブラウザのポップアップブロックを解除してお試しください）。");
+      err.popupNeeded = true; throw err;
+    }
+    throw e;
+  }
+}
+
 // gcal.js から使う小さなブリッジ
 window.DandoriCloud = {
   getUser: () => currentUser,
   getGoogleToken,
+  getOtherAccountToken,
   clearGoogleToken,
   hasCachedToken: () => !!readGoogleToken(),
 };

@@ -30,7 +30,6 @@
   const FREE_KEY = "dandori.gcalFree";
   const PLAN_KEY = "dandori.gcalPlan";
   const PENDING_KEY = "dandori.gcalPending";
-  const CLIENTID_KEY = "dandori.gcalClientId"; // 別Googleアカウント読み込み用のOAuthクライアントID
   const STEP_MS = 15 * 60 * 1000; // 15分刻み
   const HOUR_PX = 44;             // 週表示の1時間の高さ
   const WD = ["日", "月", "火", "水", "木", "金", "土"];
@@ -47,7 +46,7 @@
   let lastUnplaced = [];                 // 直近の自動配置で入りきらなかったもの
   let selectedIds = null;                // 配置対象タスクid（null=未初期化→全選択）
   let drag = null;                       // ドラッグ中の状態
-  let gisToken = null;                   // 別アカウント読み込み時のアクセストークン {token,exp}
+  let otherToken = null;                 // 別アカウント読み込み時のアクセストークン {token,exp}
   let render = { startMin: 0, top: 0, cols: [] }; // 週表示の座標系（ドラッグ計算用）
 
   /* ---------- 保存/読込 ---------- */
@@ -192,48 +191,23 @@
     return await window.DandoriCloud.getGoogleToken(SCOPE);
   }
 
-  /* ---------- 別のGoogleアカウントで読み込む（Google Identity Services） ----------
-   * 同期用アカウントとは独立して、任意のGoogleアカウントのカレンダーを閲覧するための
-   * アクセストークンを取得する。OAuthクライアントID（ウェブ）が必要（端末ローカル保存）。 */
-  function loadClientId() { try { return (localStorage.getItem(CLIENTID_KEY) || "").trim(); } catch (e) { return ""; } }
-  function saveClientId(v) { try { localStorage.setItem(CLIENTID_KEY, (v || "").trim()); } catch (e) { /* ignore */ } }
-  function loadGis() {
-    return new Promise((resolve, reject) => {
-      if (window.google && window.google.accounts && window.google.accounts.oauth2) return resolve();
-      const s = document.createElement("script");
-      s.src = "https://accounts.google.com/gsi/client"; s.async = true; s.defer = true;
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error("Google認証スクリプトの読み込みに失敗しました（ネットワークをご確認ください）。"));
-      document.head.appendChild(s);
-    });
-  }
-  function getGisToken(clientId, forceSelect) {
-    return new Promise((resolve, reject) => {
-      if (gisToken && gisToken.exp > Date.now() + 60000 && !forceSelect) return resolve(gisToken.token);
-      loadGis().then(() => {
-        const client = window.google.accounts.oauth2.initTokenClient({
-          client_id: clientId, scope: SCOPE, prompt: forceSelect ? "select_account" : "",
-          callback: (resp) => {
-            if (resp && resp.access_token) { gisToken = { token: resp.access_token, exp: Date.now() + ((resp.expires_in || 3300) * 1000) }; resolve(resp.access_token); }
-            else reject(new Error("アクセストークンを取得できませんでした。"));
-          },
-          error_callback: (err) => reject(new Error((err && (err.message || err.type)) || "認証に失敗しました。")),
-        });
-        client.requestAccessToken();
-      }).catch(reject);
-    });
-  }
+  /* ---------- 別のGoogleアカウントで読み込む ----------
+   * sync.js が二次的な Firebase app でアクセストークンを取得する（同期の
+   * ログインは壊れない）。OAuthクライアントIDの入力や生成元設定は不要。
+   * トークンは短命なので端末メモリに約55分キャッシュし、切れたら再取得。 */
   // 読み込みに使うトークン（同期アカウント or 別アカウント）
   async function getReadToken() {
     if (prefs.otherAccount) {
-      const cid = loadClientId();
-      if (!cid) { const e = new Error("CLIENT_ID_REQUIRED"); e.needClientId = true; throw e; }
-      return await getGisToken(cid, !gisToken);
+      if (!window.DandoriCloud || !window.DandoriCloud.getOtherAccountToken) throw new Error("別アカウント読み込みに未対応です（ページを再読み込みしてください）。");
+      if (otherToken && otherToken.exp > Date.now() + 60000) return otherToken.token;
+      const t = await window.DandoriCloud.getOtherAccountToken(SCOPE);
+      otherToken = { token: t, exp: Date.now() + 55 * 60 * 1000 };
+      return t;
     }
     return await getToken();
   }
   function clearReadToken() {
-    if (prefs.otherAccount) gisToken = null;
+    if (prefs.otherAccount) otherToken = null;
     else if (window.DandoriCloud) window.DandoriCloud.clearGoogleToken();
   }
 
@@ -241,11 +215,7 @@
     try { localStorage.setItem(PENDING_KEY, JSON.stringify({ viewMode, anchor: anchor.getTime() })); } catch (e) { /* ignore */ }
   }
   function handleAuthError(e) {
-    if (e && e.needClientId) {
-      const d = q("#gc-other-setup"); if (d) d.open = true;
-      setStatus("別アカウントで読み込むには、OAuthクライアントIDの入力が必要です（下の「別アカウント設定」）。", true);
-      return;
-    }
+    if (e && e.popupNeeded) { setStatus(msg(e), true); return; }
     if (e && e.redirectRequired && typeof e.redirect === "function") {
       savePending();
       setStatus("Googleのログイン画面に移動します…");
@@ -400,10 +370,6 @@
         '</details>' +
       '</div>' +
 
-      '<details class="gcal-settings gcal-other-setup" id="gc-other-setup"' + (prefs.otherAccount && !loadClientId() ? " open" : "") + '><summary>別アカウント設定（初回のみ）</summary>' +
-        '<div class="gcal-hours">OAuthクライアントID <input type="text" id="gc-clientid" placeholder="xxxxx.apps.googleusercontent.com" value="' + esc(loadClientId()) + '"> <button id="gc-clientid-save" class="btn btn-ghost">保存</button></div>' +
-        '<p class="sync-sub">同期用アカウントと<b>別の</b>Googleアカウントのカレンダーを閲覧する場合だけ必要です。<a href="https://console.cloud.google.com/apis/credentials?project=dandori-dddf0" target="_blank" rel="noopener">Google Cloud Console →「認証情報」</a>の <b>OAuth 2.0 クライアント ID（ウェブ）</b> の「クライアント ID」を貼り付け、同じクライアントの「<b>承認済みの JavaScript 生成元</b>」に <code>https://lumina-debug.github.io</code> を追加してください。「読み込む」を押すとアカウントを選べます。</p>' +
-      '</details>' +
 
       '<div id="gc-cal"></div>' +
 
@@ -425,7 +391,7 @@
         '<ul class="sync-steps">' +
           '<li><b>空き時間の作り方</b>：週表示でカレンダーの空欄を上下にドラッグ（スマホは長めにスワイプ）すると緑の枠ができます。緑の枠は<b>ドラッグで移動・タップで削除</b>。月表示で日付をタップするとその週に移動します。</li>' +
           '<li><b>Google予定の読み込み</b>：Googleログインと<b>カレンダーの閲覧許可</b>が必要です（書き込みはしません）。初回に許可画面が出ます。</li>' +
-          '<li><b>別のGoogleアカウントで読み込む</b>：チェックを入れると、同期用とは別のアカウントのカレンダーを閲覧できます。初回のみ「別アカウント設定」でOAuthクライアントID（ウェブ）の入力＋そのクライアントの承認済みJavaScript生成元に <code>https://lumina-debug.github.io</code> の追加が必要です。</li>' +
+          '<li><b>別のGoogleアカウントで読み込む</b>：チェックを入れて「読み込む」を押すと、同期用とは別のアカウントを選んでそのカレンダーを閲覧できます（同期のログインは切り替わりません）。ポップアップの許可が必要です。そのアカウントは <a href="https://console.cloud.google.com/apis/credentials/consent?project=dandori-dddf0" target="_blank" rel="noopener">OAuth同意画面</a> の<b>テストユーザー</b>に追加されている必要があります（同期用アカウント側で設定）。クライアントIDの入力は不要です。</li>' +
           '<li><b>「Google Calendar API が有効になっていません」</b>：<a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project=dandori-dddf0" target="_blank" rel="noopener">Google Cloud Console</a> でプロジェクト <code>dandori-dddf0</code> の Calendar API を有効化（1回だけ）。</li>' +
           '<li><b>「このアプリは確認されていません」</b>→「詳細」→「移動」。<b>ブロック</b>される場合は OAuth 同意画面のテストユーザーに自分のGmailを追加。</li>' +
           '<li>Google予定を読み込まなくても、空き時間を手で指定すれば自動配置は使えます。</li>' +
@@ -446,13 +412,8 @@
     }));
     q("#gc-load").addEventListener("click", loadFromGoogle);
     q("#gc-other").addEventListener("change", (e) => {
-      prefs.otherAccount = !!e.target.checked; savePrefs(); gisToken = null;
-      const d = q("#gc-other-setup"); if (prefs.otherAccount && !loadClientId() && d) d.open = true;
-      const st = q("#gc-load-state"); if (st) { st.textContent = prefs.otherAccount ? "別アカウントで読み込みます（「読み込む」で選択）。" : "同期用アカウントで読み込みます。"; st.classList.remove("is-error"); }
-    });
-    q("#gc-clientid-save").addEventListener("click", () => {
-      const v = (q("#gc-clientid").value || "").trim(); saveClientId(v); gisToken = null;
-      setStatus(v ? "クライアントIDを保存しました。「読み込む」で別アカウントを選べます。" : "クライアントIDを消去しました。");
+      prefs.otherAccount = !!e.target.checked; savePrefs(); otherToken = null;
+      const st = q("#gc-load-state"); if (st) { st.textContent = prefs.otherAccount ? "別アカウントで読み込みます（「読み込む」でアカウントを選択）。" : "同期用アカウントで読み込みます。"; st.classList.remove("is-error"); }
     });
     q("#gc-ds").addEventListener("change", (e) => { prefs.dayStart = e.target.value || "07:00"; savePrefs(); renderView(); });
     q("#gc-de").addEventListener("change", (e) => { prefs.dayEnd = e.target.value || "22:00"; savePrefs(); renderView(); });

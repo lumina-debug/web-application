@@ -34,7 +34,7 @@ app.js              すべてのロジック（約2000行・単一ファイル�
 sync.js             クラウド同期（Firebase Auth/Google ＋ Realtime Database）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合。Googleアクセストークン取得ブリッジ window.DandoriCloud も提供（§12）
 gcal.js             予定表（週/月表示・空き時間ドラッグ指定・タスク自動配置・移動）。Googleカレンダーは閲覧のみ。通常script・IIFE。詳細 §12
 manifest.json       PWA マニフェスト
-sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v11"。sync.js / gcal.js もキャッシュ対象）
+sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v12"。sync.js / gcal.js もキャッシュ対象）
 icons/              icon-192.png / icon-512.png / icon-180.png（優先度リストのモチーフ）
 start-dandori.vbs   Windows自動起動用（サーバーを隠れて起動しブラウザで開く）
 start-dandori.bat   同上（ウィンドウ表示版）
@@ -145,7 +145,7 @@ state = {
 
 - `index.html` に manifest / theme-color / apple-touch-icon / SW登録あり。
 - `sw.js` は **ネットワーク優先**（オンラインは常に最新→キャッシュ更新、オフライン時のみキャッシュ）。**外部API（別オリジン）には介入しない**。
-- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v11"`。同期系を変えた時は毎回上げてきた）。
+- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v12"`。同期系を変えた時は毎回上げてきた）。
 - iPhoneのホーム画面アプリは、更新反映に**Safariで一度リロード／アプリ再起動**が要ることがある。
 
 ---
@@ -260,7 +260,7 @@ MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemin
 - `dandori.gcalFree`：空き時間枠 `[{start,end}]`（ms、絶対日時）。過去分は起動時に掃除。`mergeFree()` で重なり結合。
 - `dandori.gcalPlan`：配置したタスク `[{id,title,note,goalId,deadline,pinned,start,dur}]`（ms）。過去分掃除。
 - `dandori.gcalPending`：リダイレクトログイン中の復帰用（viewMode/anchor）。
-- `dandori.gcalClientId`：別Googleアカウント読み込み用の OAuth クライアントID（ウェブ）。`prefs.otherAccount` が真のときのみ使用。
+- 別アカウント用トークンは端末メモリ（`otherToken`）のみ・永続化しない（クライアントID等の設定は不要）。
 
 ### スケジューリング（純粋関数・Nodeテスト対象）
 - `computeOpenSlots(free, busy, now)`：空き枠から Google 予定（`!allDay && !free(transparent)`）と「今」を差し引いた実スロット配列。
@@ -275,7 +275,8 @@ MVP → メモ消失バグ修正＋Enter保存 → AI提案（Claude）→ Gemin
 
 ### 認証（2系統）
 - **同期用アカウント**（既定）：`getToken()`→sync.js の `getGoogleToken(scope)`。**scope = `calendar.readonly`**。Firebase Auth の Google プロバイダに addScope→`reauthenticateWithPopup`（未ログインなら `signInWithPopup`）→ accessToken。**sessionStorage `dandori.gtoken` に約55分キャッシュ**。ポップアップ不可（iOS PWA等）は `REDIRECT_REQUIRED`→`savePending()`→`signInWithRedirect`、復帰起動で `resumePending()` が再読込。
-- **別のGoogleアカウント**（`prefs.otherAccount`）：`getReadToken()` が **Google Identity Services（GIS）** の `initTokenClient`（`https://accounts.google.com/gsi/client` を動的読込）で、Firebase の同期ログインとは独立にアクセストークンを取得（`prompt:'select_account'` でアカウント選択）。トークンはメモリ `gisToken` にキャッシュ。**要 OAuth クライアントID（`dandori.gcalClientId`）**＋そのクライアントの「承認済み JavaScript 生成元」に公開ドメイン追加（モーダル「別アカウント設定」＋ヘルプに記載）。未入力時は `needClientId` エラーで設定を促す。401/403 は `clearReadToken()` が使用中系統のトークンを破棄。
+- **別のGoogleアカウント**（`prefs.otherAccount`）：`getReadToken()` が sync.js の `DandoriCloud.getOtherAccountToken(SCOPE)` を呼ぶ。sync.js は **二次的な Firebase app インスタンス**（`initializeApp(cfg, "gcalReader")`＋その `getAuth`）で `signInWithPopup`（`prompt:'select_account'`）→ accessToken。**同期用（既定app）のセッションは壊れない**。Firebase自身のOAuthクライアント＋authDomainを使うので **クライアントIDの入力や生成元設定は不要**（承認済みドメインは設定済み）。トークンはメモリ `otherToken` に約55分キャッシュ。ポップアップ不可時は `popupNeeded` エラーで許可を促す。401/403 は `clearReadToken()` が使用中系統のトークンを破棄。
+  - ⚠ その別アカウントは **OAuth同意画面（テストモード）のテストユーザー**に入っている必要あり（同期用アカウント側で追加）。Calendar API 有効化も従来どおり必要。
 
 ### ⚠ Google 側の初回設定（未実施なら必要・ユーザー作業）
 1. **Google Calendar API の有効化**（1回だけ）：https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project=dandori-dddf0 → 「有効にする」。未有効だと読み込み時に 403（モーダル内ヘルプにも記載）。
