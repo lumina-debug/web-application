@@ -1669,19 +1669,26 @@ function rawReplyHTML(text) {
     + `<p class="ai-sub">途中で切れている場合はモデルを変える/再試行を、形式が違う場合はこの内容を「貼り付けて解析」欄に貼って再解析してください。</p>`;
 }
 
+/* まとめて入力の下書きを自動一時保存（誤ってESC等で閉じても消えないように） */
+const BULK_DRAFT_KEY = "dandori.bulkDraft";
+function loadBulkDraft() { try { return JSON.parse(localStorage.getItem(BULK_DRAFT_KEY) || "null") || {}; } catch (e) { return {}; } }
+function saveBulkDraft(d) { try { localStorage.setItem(BULK_DRAFT_KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } }
+function clearBulkDraft() { try { localStorage.removeItem(BULK_DRAFT_KEY); } catch (e) { /* ignore */ } }
+
 function openBulkModal() {
   modalTitle.textContent = "まとめて入力（AIでタスク化）";
   modalBody.innerHTML = `
-    <p class="ai-sub">やること・目標を箇条書きや文章で自由に書いてください。AIがタスク（見積・締切・目標）に整理し、日付に振り分けます。</p>
+    <p class="ai-sub">やること・目標を箇条書きや文章で自由に書いてください。AIがタスク（見積・締切・目標）に整理し、日付に振り分けます。<span class="ai-hint">入力内容は自動保存されるので、閉じても消えません。</span></p>
     <div class="field">
       <textarea id="bulk-input" rows="7" placeholder="例）来週の役員会の準備一式。競合調査、企画書ドラフト、スライド作成、関係者へ日程連絡。経費精算も今週中。"></textarea>
     </div>
     <div class="bulk-actions">
       <button type="button" class="btn btn-primary" id="bulk-run">⚡ AIでタスク化</button>
       <button type="button" class="btn btn-ghost" id="bulk-copy">📋 プロンプトをコピー</button>
+      <button type="button" class="link-btn" id="bulk-clear">下書きを消す</button>
       <span id="bulk-status" class="ai-status"></span>
     </div>
-    <details class="ai-block">
+    <details class="ai-block" id="bulk-paste-details">
       <summary>AIの回答（JSON）を貼り付けて解析（コピペ方式）</summary>
       <textarea id="bulk-paste" class="ai-paste" rows="5" placeholder="AIの回答をここに貼り付け…"></textarea>
       <button type="button" class="btn btn-ghost" id="bulk-parse">解析</button>
@@ -1777,13 +1784,34 @@ function openBulkModal() {
       added++;
     });
     save();
+    clearBulkDraft();
     renderAll();
     closeModal();
     switchTab("priority");
   });
 
+  // 下書きの復元＋自動保存
+  const inputEl = document.getElementById("bulk-input");
+  const pasteEl = document.getElementById("bulk-paste");
+  const draft = loadBulkDraft();
+  if (draft.input) inputEl.value = draft.input;
+  if (draft.paste) {
+    pasteEl.value = draft.paste;
+    const d = document.getElementById("bulk-paste-details");
+    if (d) d.open = true;
+  }
+  const persist = () => saveBulkDraft({ input: inputEl.value, paste: pasteEl.value });
+  inputEl.addEventListener("input", persist);
+  pasteEl.addEventListener("input", persist);
+  document.getElementById("bulk-clear").addEventListener("click", () => {
+    inputEl.value = ""; pasteEl.value = ""; clearBulkDraft();
+    setBulkStatus("下書きを消しました。");
+    inputEl.focus();
+  });
+  if (draft.input || draft.paste) setBulkStatus("前回の入力を復元しました。");
+
   openModal();
-  document.getElementById("bulk-input").focus();
+  inputEl.focus();
 }
 
 /* =========================================================

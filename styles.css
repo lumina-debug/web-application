@@ -446,6 +446,7 @@ body {
 .ai-block > summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--text-soft); }
 .ai-block[open] > summary { margin-bottom: 12px; }
 .ai-sub { font-size: 13px; color: var(--text-soft); margin: 4px 0 10px; }
+.ai-hint { display: inline-block; margin-left: 4px; color: var(--text-faint); font-size: 12px; }
 .ai-prompt, .ai-paste {
   width: 100%; box-sizing: border-box;
   border: 1px solid var(--border); border-radius: var(--radius-sm);

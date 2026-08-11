@@ -34,7 +34,7 @@ app.js              すべてのロジック（約2000行・単一ファイル�
 sync.js             クラウド同期（Firebase Auth/Google ＋ Realtime Database）。ESM module・CDNを動的import。app.jsの window.Dandori ブリッジ経由で疎結合。Googleアクセストークン取得ブリッジ window.DandoriCloud も提供（§12）
 gcal.js             予定表（週/月表示・空き時間ドラッグ指定・タスク自動配置・移動）。Googleカレンダーは閲覧のみ。通常script・IIFE。詳細 §12
 manifest.json       PWA マニフェスト
-sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v12"。sync.js / gcal.js もキャッシュ対象）
+sw.js               Service Worker（ネットワーク優先、キャッシュ名 "dandori-v14"。sync.js / gcal.js もキャッシュ対象）
 icons/              icon-192.png / icon-512.png / icon-180.png（優先度リストのモチーフ）
 start-dandori.vbs   Windows自動起動用（サーバーを隠れて起動しブラウザで開く）
 start-dandori.bat   同上（ウィンドウ表示版）
@@ -114,6 +114,7 @@ state = {
 - `openBulkModal()`、`buildBulkPrompt()`、`extractJsonArray()`（フェンス/オブジェクト包み/末尾カンマ/前後文を吸収）、`normalizeParsedTasks()`、`findOrCreateGoal()`。
 - プレビュー描画は `previewTasksHTML()`、解析失敗時は `rawReplyHTML()`（**分解と共用**）。
 - 出力上限は `streamAI(..., 8192)`（途切れ・Geminiの思考消費対策）。
+- **下書きの自動一時保存**：本文・貼り付け欄を入力のたび `localStorage["dandori.bulkDraft"]`（`{input,paste}`）へ保存。`openBulkModal()` 冒頭で復元し、誤ってESC/背景クリックで閉じても消えない。**タスク追加成功時**と「下書きを消す」で `clearBulkDraft()`。`loadBulkDraft/saveBulkDraft/clearBulkDraft` はモジュール関数。
 
 ### タスク分解
 - カードの「分解」→ `openDecomposeModal(taskId)`、`buildDecomposePrompt(task, info, goalName)`。
@@ -145,7 +146,7 @@ state = {
 
 - `index.html` に manifest / theme-color / apple-touch-icon / SW登録あり。
 - `sw.js` は **ネットワーク優先**（オンラインは常に最新→キャッシュ更新、オフライン時のみキャッシュ）。**外部API（別オリジン）には介入しない**。
-- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v12"`。同期系を変えた時は毎回上げてきた）。
+- **資産を変えたら**：基本はネットワーク優先なのでリロードで反映。確実に切り替えたい時は **`CACHE` 名を上げる**（現在 `"dandori-v14"`。同期系を変えた時は毎回上げてきた）。
 - iPhoneのホーム画面アプリは、更新反映に**Safariで一度リロード／アプリ再起動**が要ることがある。
 
 ---
