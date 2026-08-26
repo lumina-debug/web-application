@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>引継ぎ資料箱</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">📦</span>
+        <div>
+          <h1>引継ぎ資料箱</h1>
+          <p class="brand-sub">メモと写真を放り込めば、資料になって、勝手に仕分けされる。</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span id="store-badge" class="badge" title="資料の保存先">…</span>
+        <span id="ai-badge" class="badge" title="AIの利用状況">…</span>
+        <button type="button" id="btn-settings" class="icon-btn" title="保存先の設定" aria-label="保存先の設定">⚙️</button>
+        <label class="author-field">
+          <span>あなたの名前</span>
+          <input id="author" type="text" placeholder="例: 田中（M2）" autocomplete="name" />
+        </label>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-view="box" role="tab">📚 資料箱</button>
+      <button class="tab" data-view="create" role="tab">✍️ 資料をつくる</button>
+      <button class="tab" data-view="upload" role="tab">📎 そのままアップロード</button>
+    </nav>
+
+    <main>
+      <!-- 資料箱 -->
+      <section id="view-box" class="view is-active">
+        <div class="box-controls">
+          <input id="search" type="search" placeholder="キーワードで検索（タイトル・本文・タグ・ファイル名）" />
+          <select id="sort">
+            <option value="new">新しい順</option>
+            <option value="old">古い順</option>
+            <option value="title">タイトル順</option>
+          </select>
+        </div>
+        <div id="chips" class="chips"></div>
+        <div id="doc-list" class="cards"></div>
+        <p id="empty-box" class="empty" hidden>
+          まだ資料がありません。「✍️ 資料をつくる」からメモを投げ込むか、「📎 そのままアップロード」で手元のファイルを置いてください。
+        </p>
+      </section>
+
+      <!-- 資料をつくる -->
+      <section id="view-create" class="view">
+        <div class="panel">
+          <h2>引継ぎメモから資料をつくる</h2>
+          <p class="hint">
+            箇条書き・言い回しの雑さは気にしなくて大丈夫です。写真（装置の全景、スイッチの位置、画面のスクショなど）があるほど資料の精度が上がります。
+          </p>
+          <form id="create-form" class="form">
+            <label class="field">
+              <span>タイトル<em>（空欄ならAIが付けます）</em></span>
+              <input name="title" type="text" placeholder="例: SEMの立ち上げから撮影までの手順" />
+            </label>
+
+            <label class="field">
+              <span>引継ぎメモ<em class="req">必須</em></span>
+              <textarea name="memo" rows="12" placeholder="例）
+・SEMは朝イチだと真空が落ちてるので、まず排気を確認
+・電源は右下の緑ボタン。順番を間違えるとエラーE12が出る
+・試料台は3番のやつを使う。カーボンテープは棚の一番上
+・撮影条件は加速電圧15kV、WD10mmくらいが無難
+・予約表はSlackの#sem-予約 に書く。無断で使うと怒られる"></textarea>
+            </label>
+
+            <div class="field">
+              <span>写真・スクショ<em>（任意・複数可）</em></span>
+              <div class="dropzone" id="create-drop">
+                <input id="create-files" name="files" type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.xlsx,.pptx,.docx" />
+                <p>ここにドラッグ＆ドロップ、またはクリックして選択</p>
+              </div>
+              <div id="create-previews" class="previews"></div>
+            </div>
+
+            <div class="grid-2">
+              <label class="field">
+                <span>タグ<em>（任意・カンマ区切り）</em></span>
+                <input name="tags" type="text" placeholder="SEM, 撮影, 装置" />
+              </label>
+              <label class="field">
+                <span>カテゴリ</span>
+                <select name="category" id="create-category">
+                  <option value="">🤖 自動で分類する</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="btn-ai" class="btn btn-primary">✨ AIで資料を作成する</button>
+              <button type="button" id="btn-prompt" class="btn">📝 資料作成プロンプトを出力する</button>
+            </div>
+            <p class="hint" id="ai-hint"></p>
+          </form>
+        </div>
+
+        <div class="panel" id="prompt-panel" hidden>
+          <h2>📝 資料作成プロンプト</h2>
+          <p class="hint">
+            これをコピーして、お使いのAI（Claude / ChatGPT など）に貼り付けてください。写真がある場合はAI側にも一緒に添付します。
+            返ってきたMarkdownを下の欄に貼り付けて保存すると、自動で分類されて資料箱に入ります。
+          </p>
+          <pre id="prompt-text" class="prompt-box"></pre>
+          <div class="actions">
+            <button type="button" id="btn-copy" class="btn">📋 プロンプトをコピー</button>
+          </div>
+          <label class="field">
+            <span>AIが出力した資料（Markdown）を貼り付け</span>
+            <textarea id="paste-body" rows="10" placeholder="# SEMの立ち上げ手順&#10;&#10;## この資料について&#10;..."></textarea>
+          </label>
+          <div class="actions">
+            <button type="button" id="btn-save-pasted" class="btn btn-primary">📥 資料箱に保存する</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- そのままアップロード -->
+      <section id="view-upload" class="view">
+        <div class="panel">
+          <h2>手元の資料をそのまま置く</h2>
+          <p class="hint">
+            AIで作った資料でなくても構いません。装置の写真、紙のマニュアルのスキャン、前任者のスライド、Excelの管理表——
+            置いておけば自動で分類され、検索できる場所に並びます。
+          </p>
+          <form id="upload-form" class="form">
+            <div class="field">
+              <span>ファイル<em class="req">必須</em></span>
+              <div class="dropzone" id="upload-drop">
+                <input id="upload-files" name="files" type="file" multiple />
+                <p>ここにドラッグ＆ドロップ、またはクリックして選択</p>
+              </div>
+              <div id="upload-previews" class="previews"></div>
+            </div>
+            <label class="field">
+              <span>タイトル<em>（空欄ならファイル名を使います）</em></span>
+              <input name="title" type="text" placeholder="例: 恒温槽の取扱説明書（紙のスキャン）" />
+            </label>
+            <label class="field">
+              <span>ひとことメモ<em>（何の資料か・どこで使うか。分類の精度が上がります）</em></span>
+              <textarea name="memo" rows="4" placeholder="例: 4階実験室の恒温槽の説明書。温度設定のところだけ付箋を貼ってある。"></textarea>
+            </label>
+            <div class="grid-2">
+              <label class="field">
+                <span>タグ<em>（任意）</em></span>
+                <input name="tags" type="text" placeholder="恒温槽, マニュアル" />
+              </label>
+              <label class="field">
+                <span>カテゴリ</span>
+                <select name="category" id="upload-category">
+                  <option value="">🤖 自動で分類する</option>
+                </select>
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary">📎 アップロードして分類する</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <!-- 資料の詳細 -->
+    <div id="detail" class="overlay" hidden>
+      <div class="detail-panel" role="dialog" aria-modal="true">
+        <div class="detail-head">
+          <div id="detail-meta"></div>
+          <button type="button" id="detail-close" class="icon-btn" aria-label="閉じる">✕</button>
+        </div>
+        <div id="detail-body" class="detail-body markdown"></div>
+        <div id="detail-attachments" class="attachments"></div>
+        <div id="detail-edit" class="edit-area" hidden></div>
+        <div class="detail-actions">
+          <button type="button" id="btn-edit" class="btn">✏️ 編集</button>
+          <button type="button" id="btn-reclassify" class="btn">🤖 分類しなおす</button>
+          <button type="button" id="btn-download" class="btn">⬇️ Markdownで保存</button>
+          <button type="button" id="btn-pin" class="btn">📌 ピン留め</button>
+          <button type="button" id="btn-delete" class="btn btn-danger">🗑 削除</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings" class="overlay" hidden>
+      <div class="detail-panel settings-panel" role="dialog" aria-modal="true">
+        <div class="detail-head">
+          <h2>資料の保存先</h2>
+          <button type="button" id="settings-close" class="icon-btn" aria-label="閉じる">✕</button>
+        </div>
+        <p class="hint">
+          Google Drive に保存すると、サーバーを用意しなくても研究室の全員で同じ資料箱を共有できます。
+          Apps Script の作り方は README の「Google Drive で共有する」を参照してください。
+        </p>
+        <label class="field">
+          <span>Apps Script のウェブアプリURL</span>
+          <input id="settings-url" type="url" placeholder="https://script.google.com/macros/s/……/exec" />
+        </label>
+        <label class="field">
+          <span>合言葉<em>（Apps Script側で ACCESS_TOKEN を設定した場合のみ）</em></span>
+          <input id="settings-token" type="text" placeholder="未設定なら空欄のまま" />
+        </label>
+        <p class="hint" id="settings-status"></p>
+        <div class="actions">
+          <button type="button" id="settings-save" class="btn btn-primary">🔗 接続して保存</button>
+          <button type="button" id="settings-clear" class="btn">このサーバーに戻す</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <div id="loading" class="loading" hidden><div class="spinner"></div><p id="loading-text">処理中…</p></div>
+
+    <script src="config.js"></script>
+    <script src="markdown.js"></script>
+    <script src="api-client.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "hikitsugi-box",
+  "version": "1.0.0",
+  "private": true,
+  "description": "研究室の引継ぎ資料をつくって・集めて・自動で分類するWebアプリ",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "build:gas": "node tools/build-gas.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.1"
+  }
+}
