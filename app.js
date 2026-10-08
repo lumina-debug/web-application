@@ -1,7 +1,7 @@
 "use strict";
 
 /* =========================================================
- * 段取り（Dandori） — タスク優先度ボード
+ * 段取り（Dandori） — やりたいこと優先度ボード
  * データはブラウザの localStorage に保存（端末内のみ）
  * ======================================================= */
 
@@ -16,9 +16,9 @@ let state = {
   memos: [],   // { id, text, createdAt }
   settings: { deadlineWeight: 0.5, aiProvider: "claude", aiModel: "claude-opus-4-8", geminiModel: "gemini-2.5-flash", sortMode: "score" },
   aiSuggestion: null, // { orderIds, text, createdAt, model, signature }
-  aiContext: null,    // { ids: [taskId...] } — 直近に生成したプロンプトのタスク番号対応
+  aiContext: null,    // { ids: [taskId...] } — 直近に生成したプロンプトの番号対応
   manualOrder: [],    // 手動並び替えの順序（taskId配列）
-  recurring: [],      // 繰り返しタスク { id, title, weekdays:[0-6], goalId, effort, note, createdAt, lastGenerated }
+  recurring: [],      // 繰り返し { id, title, weekdays:[0-6], goalId, effort, note, createdAt, lastGenerated }
   updatedAt: 0,       // 最終更新時刻（ms）。クラウド同期の last-write-wins 判定に使用
 };
 
@@ -30,9 +30,9 @@ function defaultSettings() {
 }
 
 let activeGoalFilter = "all";
-const focusSkipped = new Set(); // 集中モードで「後回し」したタスク（一時的・非永続）
+const focusSkipped = new Set(); // 集中モードで「後回し」したやりたいこと（一時的・非永続）
 let selectMode = false;         // まとめて選択モード（一時的・非永続）
-const selectedIds = new Set();  // 選択中のタスクID（一時的・非永続）
+const selectedIds = new Set();  // 選択中のやりたいことID（一時的・非永続）
 
 /* ---------- Storage ---------- */
 // 生のオブジェクト（localStorage / インポート / クラウド）を state の形に整える
@@ -109,7 +109,7 @@ const Dandori = {
   // ローカル変更が保存されるたびに呼ばれるコールバックを登録
   onSave(cb) { if (typeof cb === "function") saveListeners.push(cb); },
 
-  // タスクの優先度スコア（gcal.js が週間予定表の割り当て順の決定に使用）
+  // やりたいことの優先度スコア（gcal.js が週間予定表の割り当て順の決定に使用）
   priorityOf: (t) => priorityOf(t),
 };
 window.Dandori = Dandori;
@@ -308,7 +308,7 @@ function renderGoalFilter() {
 }
 
 // orderIds の順に並べ、未掲載はスコア順で末尾へ（スコア/AI/手動で共用）
-// 「至急（pinned）」タスクはどのモードでも常に先頭グループに来る。
+// 「至急（pinned）」やりたいことはどのモードでも常に先頭グループに来る。
 function rankActive(tasks, orderIds) {
   return tasks
     .map((t) => ({ task: t, pri: priorityOf(t) }))
@@ -334,12 +334,12 @@ function orderForMode(mode) {
   return null; // score
 }
 
-// 現在のモードでの全アクティブタスクの並び（手動順の土台に使う）
+// 現在のモードでの全アクティブやりたいことの並び（手動順の土台に使う）
 function orderedActiveIds(mode) {
   return rankActive(activeTasks(), orderForMode(mode)).map((x) => x.task.id);
 }
 
-// 目標フィルタを適用したアクティブタスク
+// 目標フィルタを適用したアクティブやりたいこと
 function filteredActiveTasks() {
   let tasks = activeTasks();
   if (activeGoalFilter === "none") tasks = tasks.filter((t) => !t.goalId);
@@ -370,7 +370,7 @@ function renderPriority() {
 
   const tasks = filteredActiveTasks();
   if (tasks.length === 0) {
-    list.innerHTML = emptyState("🗂️", "タスクがありません", "「＋ タスクを追加」から、やるべきことを登録しましょう。");
+    list.innerHTML = emptyState("🗂️", "やりたいことがありません", "「＋ やりたいことを追加」から、やるべきことを登録しましょう。");
     return;
   }
 
@@ -381,7 +381,7 @@ function renderPriority() {
   if (selectMode) {
     const n = selectedIds.size;
     topBar = `<div class="bulk-bar">
-      <span class="bulk-count">${n ? `${n}件を選択中` : "タスクを選択してください"}</span>
+      <span class="bulk-count">${n ? `${n}件を選択中` : "やりたいことを選択してください"}</span>
       <button class="btn btn-ghost" data-action="select-all">すべて選択</button>
       <button class="btn btn-ghost" data-action="select-clear">選択解除</button>
       <button class="btn btn-danger" data-action="bulk-delete" ${n ? "" : "disabled"}>🗑 削除</button>
@@ -393,7 +393,7 @@ function renderPriority() {
   if (mode === "ai") {
     if (state.aiSuggestion && state.aiSuggestion.orderIds.length) {
       const stale = state.aiSuggestion.signature !== tasksSignature();
-      banner = `<div class="ai-banner">🤖 AI提案順で表示中${stale ? "（タスクが変わりました・再提案がおすすめ）" : ""}<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
+      banner = `<div class="ai-banner">🤖 AI提案順で表示中${stale ? "（やりたいことが変わりました・再提案がおすすめ）" : ""}<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
     } else {
       banner = `<div class="ai-banner">AI提案がまだありません。「AI提案」タブで作成してください。<button class="link-btn" data-action="sort-score">スコア順に戻す</button></div>`;
     }
@@ -417,7 +417,7 @@ function renderFocus() {
   const ranked = rankActive(filteredActiveTasks(), orderForMode(state.settings.sortMode || "score"));
 
   if (ranked.length === 0) {
-    list.innerHTML = emptyState("🎉", "すべて完了！", "お疲れさまでした。新しいタスクは「＋ タスクを追加」から。");
+    list.innerHTML = emptyState("🎉", "すべて完了！", "お疲れさまでした。新しいやりたいことは「＋ やりたいことを追加」から。");
     return;
   }
 
@@ -520,7 +520,7 @@ function taskCardHTML(task, pri) {
 function renderGoals() {
   const list = document.getElementById("goals-list");
   if (state.goals.length === 0) {
-    list.innerHTML = emptyState("🎯", "やりたいことがありません", "達成したい目標を登録し、そこに「やるべきこと」を紐づけましょう。");
+    list.innerHTML = emptyState("🎯", "目標がありません", "達成したい目標を登録し、そこに「やりたいこと」を紐づけましょう。");
     return;
   }
 
@@ -537,7 +537,7 @@ function renderGoals() {
           <span class="chip ${deadlineLabel(t.deadline).cls}">${esc(deadlineLabel(t.deadline).text)}</span>
           <button class="link-btn" data-action="edit">編集</button>
         </div>`).join("")
-      : `<div class="goal-task-row"><span class="grow" style="color:var(--text-faint)">まだタスクがありません</span></div>`;
+      : `<div class="goal-task-row"><span class="grow" style="color:var(--text-faint)">まだやりたいことがありません</span></div>`;
 
     return `
       <div class="goal-card" data-id="${esc(g.id)}">
@@ -554,7 +554,7 @@ function renderGoals() {
         <div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
         <div class="goal-progress-text">${done} / ${tasks.length} 完了（${pct}%）</div>
         <div class="goal-tasks">${taskRows}</div>
-        <button class="btn btn-ghost goal-add-task" data-action="add-task-to-goal">＋ このゴールにタスクを追加</button>
+        <button class="btn btn-ghost goal-add-task" data-action="add-task-to-goal">＋ この目標にやりたいことを追加</button>
       </div>`;
   }).join("");
 }
@@ -571,7 +571,7 @@ function renderMemos() {
       <div class="memo-text">${esc(m.text)}</div>
       <span class="memo-date">${new Date(m.createdAt).toLocaleDateString("ja-JP")}</span>
       <div class="memo-actions">
-        <button class="btn btn-ghost" data-action="memo-to-task">タスク化</button>
+        <button class="btn btn-ghost" data-action="memo-to-task">やりたいことにする</button>
         <button class="link-btn danger" data-action="memo-delete">削除</button>
       </div>
     </div>`).join("");
@@ -584,10 +584,10 @@ function renderDone() {
     .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
 
   document.getElementById("done-summary").textContent =
-    done.length ? `完了したタスク：${done.length}件` : "";
+    done.length ? `完了したやりたいこと：${done.length}件` : "";
 
   if (done.length === 0) {
-    list.innerHTML = emptyState("✅", "完了したタスクはまだありません", "タスクのチェックを入れると、ここに移動します。");
+    list.innerHTML = emptyState("✅", "完了したやりたいことはまだありません", "やりたいことのチェックを入れると、ここに移動します。");
     return;
   }
   list.innerHTML = done.map((t) => {
@@ -614,7 +614,7 @@ function emptyState(emoji, title, sub) {
 }
 
 /* =========================================================
- * Modal — タスク / 目標フォーム
+ * Modal — やりたいこと / 目標フォーム
  * ======================================================= */
 const overlay = document.getElementById("modal-overlay");
 const modalTitle = document.getElementById("modal-title");
@@ -638,7 +638,7 @@ const EFFORT_PRESETS = [
 
 function openTaskModal(taskId, presetGoalId, prefill) {
   const task = taskId ? state.tasks.find((t) => t.id === taskId) : null;
-  modalTitle.textContent = task ? "タスクを編集" : "タスクを追加";
+  modalTitle.textContent = task ? "やりたいことを編集" : "やりたいことを追加";
 
   const goalOptions = [`<option value="">（未分類）</option>`]
     .concat(state.goals.map((g) =>
@@ -648,14 +648,14 @@ function openTaskModal(taskId, presetGoalId, prefill) {
   modalBody.innerHTML = `
     <form id="task-form">
     <div class="field">
-      <label for="f-title">タスク名 *</label>
+      <label for="f-title">やりたいこと名 *</label>
       <input type="text" id="f-title" value="${esc(task ? task.title : (prefill && prefill.title ? prefill.title : ""))}" placeholder="例）企画書をレビューする" />
     </div>
     <div class="field field-check">
       <label class="check-label"><input type="checkbox" id="f-pinned" ${(task ? task.pinned : (prefill && prefill.pinned)) ? "checked" : ""} /> 🔥 至急（リストの一番上に固定する）</label>
     </div>
     <div class="field">
-      <label for="f-goal">紐づける目標（やりたいこと）</label>
+      <label for="f-goal">紐づける目標</label>
       <select id="f-goal">${goalOptions}</select>
     </div>
     <div class="field">
@@ -770,7 +770,7 @@ function saveTask(taskId, prefill) {
 }
 
 function deleteTask(taskId) {
-  if (!confirm("このタスクを削除しますか？")) return;
+  if (!confirm("このやりたいことを削除しますか？")) return;
   state.tasks = state.tasks.filter((t) => t.id !== taskId);
   save();
   renderAll();
@@ -786,7 +786,7 @@ function openGoalModal(goalId) {
   modalBody.innerHTML = `
     <form id="goal-form">
     <div class="field">
-      <label for="g-title">やりたいこと（目標）*</label>
+      <label for="g-title">目標 *</label>
       <input type="text" id="g-title" value="${esc(goal ? goal.title : "")}" placeholder="例）新サービスの企画を通す" />
     </div>
     <div class="field">
@@ -797,7 +797,7 @@ function openGoalModal(goalId) {
     </div>
     <div class="field">
       <label for="g-desc">説明（任意）</label>
-      <textarea id="g-desc" placeholder="この目標のゴールやメモ">${esc(goal ? goal.desc || "" : "")}</textarea>
+      <textarea id="g-desc" placeholder="この目標の内容やメモ">${esc(goal ? goal.desc || "" : "")}</textarea>
     </div>
     <div class="modal-actions">
       ${goal ? `<button type="button" class="link-btn delete-btn" id="g-delete">削除</button>` : ""}
@@ -834,7 +834,7 @@ function openGoalModal(goalId) {
     document.getElementById("g-delete").addEventListener("click", () => {
       const tasks = tasksForGoal(goalId);
       const msg = tasks.length
-        ? `この目標を削除しますか？\n紐づく${tasks.length}件のタスクは「未分類」になります。`
+        ? `この目標を削除しますか？\n紐づく${tasks.length}件のやりたいことは「未分類」になります。`
         : "この目標を削除しますか？";
       if (!confirm(msg)) return;
       tasks.forEach((t) => { t.goalId = null; });
@@ -867,13 +867,13 @@ function toggleTask(taskId) {
   renderAll();
 }
 
-// manualOrder を「今アクティブな全タスク」で初期化／補完する（手動モードへ切替も行う）
+// manualOrder を「今アクティブな全やりたいこと」で初期化／補完する（手動モードへ切替も行う）
 function ensureManualOrderInitialized() {
   if (state.settings.sortMode !== "manual" || !state.manualOrder || !state.manualOrder.length) {
     state.manualOrder = orderedActiveIds(state.settings.sortMode);
     state.settings.sortMode = "manual";
   } else {
-    // 新規タスクを末尾に補完し、完了/削除済みを除去
+    // 新規やりたいことを末尾に補完し、完了/削除済みを除去
     const present = new Set(state.manualOrder);
     activeTasks().forEach((t) => { if (!present.has(t.id)) state.manualOrder.push(t.id); });
     const active = new Set(activeTasks().map((t) => t.id));
@@ -881,7 +881,7 @@ function ensureManualOrderInitialized() {
   }
 }
 
-// 至急にしたタスクを手動順でも先頭へ（手動モードで最上位に来るように）
+// 至急にしたやりたいことを手動順でも先頭へ（手動モードで最上位に来るように）
 function pinToFront(id) {
   if (state.manualOrder && state.manualOrder.length) {
     state.manualOrder = [id].concat(state.manualOrder.filter((x) => x !== id));
@@ -919,7 +919,7 @@ function moveTask(id, dir) {
 }
 
 // ドラッグ＆ドロップ確定：表示中カードの新しい並び（DOM順）を手動順へ反映
-// フィルタで隠れているタスクの相対位置は保持する（moveTaskと同じ考え方）。
+// フィルタで隠れているやりたいことの相対位置は保持する（moveTaskと同じ考え方）。
 function commitDraggedOrder(displayedNewOrder) {
   ensureManualOrderInitialized();
   const displayedSet = new Set(displayedNewOrder);
@@ -1002,7 +1002,7 @@ function clearSelection() {
 }
 function bulkDeleteSelected() {
   if (!selectedIds.size) return;
-  if (!confirm(`選択した ${selectedIds.size} 件のタスクを削除しますか？`)) return;
+  if (!confirm(`選択した ${selectedIds.size} 件のやりたいことを削除しますか？`)) return;
   state.tasks = state.tasks.filter((t) => !selectedIds.has(t.id));
   if (state.manualOrder) state.manualOrder = state.manualOrder.filter((id) => !selectedIds.has(id));
   selectedIds.clear();
@@ -1014,7 +1014,7 @@ function bulkDeleteSelected() {
 function memoToTask(memoId) {
   const m = state.memos.find((x) => x.id === memoId);
   if (!m) return;
-  // メモはタスクを「保存」できたときに削除する（キャンセル時は残す）
+  // メモはやりたいことを「保存」できたときに削除する（キャンセル時は残す）
   openTaskModal(null, null, { title: m.text, memoId });
 }
 
@@ -1034,7 +1034,7 @@ function switchTab(name) {
 
 function init() {
   load();
-  generateRecurring(); // 開いた日のぶんの週タスクを生成
+  generateRecurring(); // 開いた日のぶんの繰り返しを生成
   renderAll();
 
   // タブ
@@ -1139,12 +1139,12 @@ function init() {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !overlay.hidden) closeModal(); });
 
-  // タブに戻ったとき（日付が変わっていれば）週タスクを生成
+  // タブに戻ったとき（日付が変わっていれば）繰り返しを生成
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && generateRecurring() > 0) renderAll();
   });
 
-  // タスクカード／目標カード／メモのクリック（イベント委譲）
+  // やりたいことカード／目標カード／メモのクリック（イベント委譲）
   document.querySelector(".content").addEventListener("click", (e) => {
     const actionEl = e.target.closest("[data-action]");
     if (!actionEl) return;
@@ -1246,7 +1246,7 @@ function setApiKey(provider, val) {
   try { if (val) localStorage.setItem(k, val); else localStorage.removeItem(k); } catch (e) { /* ignore */ }
 }
 
-/* ---- プロンプト生成（タスク番号→id対応も返す） ---- */
+/* ---- プロンプト生成（番号→id対応も返す） ---- */
 function buildAiPrompt() {
   const tasks = activeTasks();
   const ids = tasks.map((t) => t.id);
@@ -1264,27 +1264,27 @@ function buildAiPrompt() {
     return line;
   });
 
-  const prompt = `あなたは優秀なプロジェクトマネジメントの秘書です。下のタスク一覧を見て、今日から着手すべき順番を提案してください。
+  const prompt = `あなたは優秀なプロジェクトマネジメントの秘書です。下のやりたいこと一覧を見て、今日から着手すべき順番を提案してください。
 
 【判断の基準】
 - 締切が近い・超過しているものを優先する
-- すぐ終わるタスク（手軽さ）は前倒しで片付けると全体が進む
-- 依存関係（あるタスクが別のタスクの前提になっている）があれば考慮する
-- 同じ目標のタスクはまとめて進めると効率的
+- すぐ終わるやりたいこと（手軽さ）は前倒しで片付けると全体が進む
+- 依存関係（あるやりたいことが別のやりたいことの前提になっている）があれば考慮する
+- 同じ目標のやりたいことはまとめて進めると効率的
 
-【タスク一覧】
+【やりたいこと一覧】
 ${lines.join("\n")}
 
 【出力の形式】
 1) おすすめ順とその理由を、簡潔な箇条書きで説明してください（各1行程度）。
 2) 最後に、必ず次の1行だけの形式で並び順を出力してください：
 ORDER: 3,1,5,2,4
-※番号は上のタスク番号です。すべての番号を一度ずつ含めてください。`;
+※番号は上の番号です。すべての番号を一度ずつ含めてください。`;
 
   return { prompt, ids };
 }
 
-/* ---- 現在のタスク集合のシグネチャ（提案の鮮度判定用） ---- */
+/* ---- 現在のやりたいこと集合のシグネチャ（提案の鮮度判定用） ---- */
 function tasksSignature() {
   return activeTasks()
     .map((t) => [t.id, t.title, t.deadline, t.effort, t.status, t.goalId].join("|"))
@@ -1441,7 +1441,7 @@ function setAiStatus(msg) {
 /* ---- アクション ---- */
 async function aiCopyPrompt() {
   const { prompt, ids } = buildAiPrompt();
-  if (!ids.length) { setAiStatus("対象のタスクがありません。"); return; }
+  if (!ids.length) { setAiStatus("対象のやりたいことがありません。"); return; }
   state.aiContext = { ids };
   save();
   try {
@@ -1471,7 +1471,7 @@ async function aiRunDirect() {
   if (!key) { setAiStatus("先にAPIキーを設定してください。"); return; }
 
   const { prompt, ids } = buildAiPrompt();
-  if (!ids.length) { setAiStatus("対象のタスクがありません。"); return; }
+  if (!ids.length) { setAiStatus("対象のやりたいことがありません。"); return; }
   state.aiContext = { ids };
 
   const runBtn = document.getElementById("ai-run");
@@ -1545,7 +1545,7 @@ function renderAi() {
     const stale = state.aiSuggestion.signature !== tasksSignature();
     const when = new Date(state.aiSuggestion.createdAt).toLocaleString("ja-JP");
     const model = state.aiSuggestion.model ? state.aiSuggestion.model + " ・ " : "";
-    document.getElementById("ai-meta").textContent = `${model}${when}${stale ? " ・ タスクが変わりました（再提案推奨）" : ""}`;
+    document.getElementById("ai-meta").textContent = `${model}${when}${stale ? " ・ やりたいことが変わりました（再提案推奨）" : ""}`;
     document.getElementById("ai-applied").textContent =
       (state.settings.sortMode === "ai" && state.aiSuggestion.orderIds.length) ? "適用中" : "";
     document.getElementById("ai-apply").disabled = !state.aiSuggestion.orderIds.length;
@@ -1555,18 +1555,18 @@ function renderAi() {
 }
 
 /* =========================================================
- * まとめて入力：自由記述 → AIでタスク化 → 一括登録
+ * まとめて入力：自由記述 → AIで整理 → 一括登録
  * ======================================================= */
 function buildBulkPrompt(text) {
   const today = todayStr();
-  return `あなたは優秀なアシスタントです。次のメモ（やること・目標）を、管理しやすいタスクに分解・整理してください。
+  return `あなたは優秀なアシスタントです。次のメモ（やること・目標）を、管理しやすいやりたいことに分解・整理してください。
 今日の日付は ${today} です。
 
 【ルール】
 - 大きすぎる項目は実行できる単位に分解する
-- 各タスクに作業見積（分）を概算で付ける
+- 各やりたいことに作業見積（分）を概算で付ける
 - 締切が読み取れるものは設定。読み取れない場合は、緊急度と分量から今日(${today})以降の日付に振り分ける（1日に詰め込みすぎない／目安は1日合計3〜4時間まで）
-- 関連するタスクは同じ「目標」名でグループ化する（なければ null）
+- 関連するやりたいことは同じ「目標」名でグループ化する（なければ null）
 
 【入力メモ】
 ${text}
@@ -1574,7 +1574,7 @@ ${text}
 【出力】
 次の形式のJSON配列だけを出力してください。前後に説明文やコードフェンスは付けないでください。
 [
-  {"title":"タスク名","effort":30,"deadline":"YYYY-MM-DD または null","goal":"目標名 または null","note":"補足 または null"}
+  {"title":"やりたいこと名","effort":30,"deadline":"YYYY-MM-DD または null","goal":"目標名 または null","note":"補足 または null"}
 ]
 - effort は分単位の整数（不明なら null）
 - deadline は YYYY-MM-DD 形式（不明なら null）
@@ -1650,7 +1650,7 @@ function findOrCreateGoal(name, cache) {
   return g.id;
 }
 
-// パース結果のタスク群を、チェックボックス付きプレビューに（まとめ入力・分解で共用）
+// パース結果のやりたいこと群を、チェックボックス付きプレビューに（まとめ入力・分解で共用）
 function previewTasksHTML(parsed, label, chkClass) {
   return `<div class="bulk-preview-head">${parsed.length}件の${esc(label)}（チェックしたものを追加）</div>` +
     parsed.map((t, i) => {
@@ -1676,14 +1676,14 @@ function saveBulkDraft(d) { try { localStorage.setItem(BULK_DRAFT_KEY, JSON.stri
 function clearBulkDraft() { try { localStorage.removeItem(BULK_DRAFT_KEY); } catch (e) { /* ignore */ } }
 
 function openBulkModal() {
-  modalTitle.textContent = "まとめて入力（AIでタスク化）";
+  modalTitle.textContent = "まとめて入力（AIで整理）";
   modalBody.innerHTML = `
-    <p class="ai-sub">やること・目標を箇条書きや文章で自由に書いてください。AIがタスク（見積・締切・目標）に整理し、日付に振り分けます。<span class="ai-hint">入力内容は自動保存されるので、閉じても消えません。</span></p>
+    <p class="ai-sub">やること・目標を箇条書きや文章で自由に書いてください。AIがやりたいこと（見積・締切・目標）に整理し、日付に振り分けます。<span class="ai-hint">入力内容は自動保存されるので、閉じても消えません。</span></p>
     <div class="field">
       <textarea id="bulk-input" rows="7" placeholder="例）来週の役員会の準備一式。競合調査、企画書ドラフト、スライド作成、関係者へ日程連絡。経費精算も今週中。"></textarea>
     </div>
     <div class="bulk-actions">
-      <button type="button" class="btn btn-primary" id="bulk-run">⚡ AIでタスク化</button>
+      <button type="button" class="btn btn-primary" id="bulk-run">⚡ AIで整理</button>
       <button type="button" class="btn btn-ghost" id="bulk-copy">📋 プロンプトをコピー</button>
       <button type="button" class="link-btn" id="bulk-clear">下書きを消す</button>
       <span id="bulk-status" class="ai-status"></span>
@@ -1696,7 +1696,7 @@ function openBulkModal() {
     <div id="bulk-preview" class="bulk-preview"></div>
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" id="bulk-cancel">閉じる</button>
-      <button type="button" class="btn btn-primary" id="bulk-add" disabled>選択したタスクを追加</button>
+      <button type="button" class="btn btn-primary" id="bulk-add" disabled>選択したやりたいことを追加</button>
     </div>`;
 
   let parsed = [];
@@ -1710,7 +1710,7 @@ function openBulkModal() {
     const box = document.getElementById("bulk-preview");
     const addBtn = document.getElementById("bulk-add");
     if (!parsed.length) { box.innerHTML = ""; addBtn.disabled = true; return; }
-    box.innerHTML = previewTasksHTML(parsed, "タスク", "bulk-chk");
+    box.innerHTML = previewTasksHTML(parsed, "やりたいこと", "bulk-chk");
     addBtn.disabled = false;
   }
 
@@ -1727,7 +1727,7 @@ function openBulkModal() {
     const arr = extractJsonArray(text);
     if (!arr) { setBulkStatus("JSONを読み取れませんでした。生の回答を表示します。"); showRaw(text); return; }
     parsed = normalizeParsedTasks(arr);
-    if (!parsed.length) { setBulkStatus("有効なタスクが見つかりませんでした。"); showRaw(text); return; }
+    if (!parsed.length) { setBulkStatus("有効なやりたいことが見つかりませんでした。"); showRaw(text); return; }
     setBulkStatus(`${parsed.length}件を読み取りました。内容を確認して追加してください。`);
     showPreview();
   }
@@ -1738,7 +1738,7 @@ function openBulkModal() {
     if (!getApiKey()) { setBulkStatus("APIキーが未設定です。『プロンプトをコピー』で手動でも作れます（設定はAI提案タブから）。"); return; }
     const btn = document.getElementById("bulk-run");
     btn.disabled = true;
-    setBulkStatus("AIでタスク化中…");
+    setBulkStatus("AIで整理中…");
     try {
       const full = await streamAI(buildBulkPrompt(text), () => {}, 8192);
       ingest(full);
@@ -1770,7 +1770,7 @@ function openBulkModal() {
 
   document.getElementById("bulk-add").addEventListener("click", () => {
     const checks = Array.from(document.querySelectorAll("#bulk-preview .bulk-chk:checked")).map((c) => Number(c.dataset.i));
-    if (!checks.length) { setBulkStatus("追加するタスクを選んでください。"); return; }
+    if (!checks.length) { setBulkStatus("追加するやりたいことを選んでください。"); return; }
     const goalCache = {};
     let added = 0;
     checks.forEach((i) => {
@@ -1816,7 +1816,7 @@ function openBulkModal() {
 
 /* =========================================================
  * 見積り時間の修正（AIでまとめて修正）
- *   現在のタスク一覧＋手入力の修正指示をAIに渡し、
+ *   現在のやりたいこと一覧＋手入力の修正指示をAIに渡し、
  *   返ってきた JSON（[{n,effort}]）を解析して effort を更新する。
  * ======================================================= */
 function buildFixEffortPrompt(instruction) {
@@ -1831,22 +1831,22 @@ function buildFixEffortPrompt(instruction) {
     return line;
   });
 
-  const prompt = `あなたは優秀なアシスタントです。下のタスク一覧には作業時間の見積り（分）が付いています。ユーザーの修正指示に従って、見積りが間違っているタスクの時間を直してください。
+  const prompt = `あなたは優秀なアシスタントです。下のやりたいこと一覧には作業時間の見積り（分）が付いています。ユーザーの修正指示に従って、見積りが間違っているやりたいことの時間を直してください。
 
-【タスク一覧】
+【やりたいこと一覧】
 ${lines.join("\n")}
 
 【ユーザーからの修正指示】
 ${instruction}
 
 【出力】
-修正が必要なタスクだけを、次の形式のJSON配列だけで出力してください。前後に説明文やコードフェンスは付けないでください。
+修正が必要なやりたいことだけを、次の形式のJSON配列だけで出力してください。前後に説明文やコードフェンスは付けないでください。
 [
   {"n":3,"effort":45}
 ]
-- n は上のタスク番号
+- n は上の番号
 - effort は修正後の作業時間（分単位の整数）
-- 指示に関係しないタスク・修正不要なタスクは含めない`;
+- 指示に関係しないやりたいこと・修正不要なやりたいことは含めない`;
 
   return { prompt, ids };
 }
@@ -1859,7 +1859,7 @@ function toHalfWidthInt(v) {
   return parseInt(half, 10);
 }
 
-// AI回答の [{n,effort}] を、現在のタスクへの変更リストに変換
+// AI回答の [{n,effort}] を、現在のやりたいことへの変更リストに変換
 function normalizeEffortFixes(arr, ids) {
   const byId = {};
   activeTasks().forEach((t) => { byId[t.id] = t; });
@@ -1900,9 +1900,9 @@ function openFixEffortModal() {
   const activeCount = activeTasks().length;
   modalTitle.textContent = "見積り時間の修正（AIでまとめて修正）";
   modalBody.innerHTML = `
-    <p class="ai-sub">今のタスク一覧（未完了 ${activeCount}件）と、下に書いた修正指示をAIに渡します。AIが直した見積りを確認してから反映できます。</p>
+    <p class="ai-sub">今のやりたいこと一覧（未完了 ${activeCount}件）と、下に書いた修正指示をAIに渡します。AIが直した見積りを確認してから反映できます。</p>
     <div class="field">
-      <textarea id="fix-input" rows="5" placeholder="例）料理系のタスクは実際その倍かかる。『企画書ドラフト』は30分で終わった。買い物はどれも15分に。"></textarea>
+      <textarea id="fix-input" rows="5" placeholder="例）料理系のやりたいことは実際その倍かかる。『企画書ドラフト』は30分で終わった。買い物はどれも15分に。"></textarea>
     </div>
     <div class="bulk-actions">
       <button type="button" class="btn btn-primary" id="fix-run">⚡ AIで修正</button>
@@ -1917,11 +1917,11 @@ function openFixEffortModal() {
     <div id="fix-preview" class="bulk-preview"></div>
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" id="fix-cancel">閉じる</button>
-      <button type="button" class="btn btn-primary" id="fix-apply" disabled>選択したタスクに反映</button>
+      <button type="button" class="btn btn-primary" id="fix-apply" disabled>選択したやりたいことに反映</button>
     </div>`;
 
   let fixes = [];
-  let promptIds = null; // プロンプト生成時のタスク番号→id対応（コピペ方式でも番号を一致させる）
+  let promptIds = null; // プロンプト生成時の番号→id対応（コピペ方式でも番号を一致させる）
 
   function setFixStatus(m) {
     const e = document.getElementById("fix-status");
@@ -1950,7 +1950,7 @@ function openFixEffortModal() {
     if (!arr) { setFixStatus("JSONを読み取れませんでした。生の回答を表示します。"); showRaw(text); return; }
     const ids = promptIds || activeTasks().map((t) => t.id);
     fixes = normalizeEffortFixes(arr, ids);
-    if (!fixes.length) { setFixStatus("修正が必要なタスクは見つかりませんでした（変化なし・番号不一致など）。"); showRaw(text); return; }
+    if (!fixes.length) { setFixStatus("修正が必要なやりたいことは見つかりませんでした（変化なし・番号不一致など）。"); showRaw(text); return; }
     setFixStatus(`${fixes.length}件の修正案を読み取りました。確認して反映してください。`);
     showPreview();
   }
@@ -1958,7 +1958,7 @@ function openFixEffortModal() {
   document.getElementById("fix-run").addEventListener("click", async () => {
     const text = document.getElementById("fix-input").value.trim();
     if (!text) { setFixStatus("修正したい内容を入力してください。"); return; }
-    if (!activeTasks().length) { setFixStatus("修正できるタスクがありません。"); return; }
+    if (!activeTasks().length) { setFixStatus("修正できるやりたいことがありません。"); return; }
     if (!getApiKey()) { setFixStatus("APIキーが未設定です。『プロンプトをコピー』で手動でも作れます（設定はAI提案タブから）。"); return; }
     const btn = document.getElementById("fix-run");
     btn.disabled = true;
@@ -1978,7 +1978,7 @@ function openFixEffortModal() {
   document.getElementById("fix-copy").addEventListener("click", async () => {
     const text = document.getElementById("fix-input").value.trim();
     if (!text) { setFixStatus("先に修正したい内容を入力してください。"); return; }
-    if (!activeTasks().length) { setFixStatus("修正できるタスクがありません。"); return; }
+    if (!activeTasks().length) { setFixStatus("修正できるやりたいことがありません。"); return; }
     const built = buildFixEffortPrompt(text);
     promptIds = built.ids;
     try {
@@ -1999,7 +1999,7 @@ function openFixEffortModal() {
 
   document.getElementById("fix-apply").addEventListener("click", () => {
     const checks = Array.from(document.querySelectorAll("#fix-preview .fix-chk:checked")).map((c) => Number(c.dataset.i));
-    if (!checks.length) { setFixStatus("反映するタスクを選んでください。"); return; }
+    if (!checks.length) { setFixStatus("反映するやりたいことを選んでください。"); return; }
     let applied = 0;
     checks.forEach((i) => {
       const f = fixes[i];
@@ -2095,7 +2095,7 @@ function eventToTask(ev) {
 function openIcsModal() {
   modalTitle.textContent = "カレンダー取り込み（.ics）";
   modalBody.innerHTML = `
-    <p class="ai-sub">Googleカレンダー等から書き出した <code>.ics</code> ファイルを選ぶと、予定をタスクとして取り込めます（OAuth不要・端末内で処理）。</p>
+    <p class="ai-sub">Googleカレンダー等から書き出した <code>.ics</code> ファイルを選ぶと、予定をやりたいこととして取り込めます（OAuth不要・端末内で処理）。</p>
     <div class="field">
       <input type="file" id="ics-file" accept=".ics,text/calendar" />
     </div>
@@ -2183,15 +2183,15 @@ function openIcsModal() {
 }
 
 /* =========================================================
- * タスクの分解：親タスク＋任意の補足情報 → AIでサブタスク化
+ * やりたいことの分解：元のやりたいこと＋任意の補足情報 → AIでやりたいこと化
  * ======================================================= */
 function buildDecomposePrompt(task, info, goalName) {
   const today = todayStr();
   const dl = task.deadline ? task.deadline : "期限なし";
-  return `あなたは優秀なアシスタントです。次の「親タスク」を、実行できる小さなサブタスクに分解してください。
+  return `あなたは優秀なアシスタントです。次の「元のやりたいこと」を、実行できる小さなやりたいことに分解してください。
 今日の日付は ${today} です。
 
-【親タスク】
+【元のやりたいこと】
 - タイトル: ${task.title}
 - 目標: ${goalName || "なし"}
 - 締切: ${dl}
@@ -2203,14 +2203,14 @@ ${info || "特になし"}
 
 【ルール】
 - 具体的で着手できる単位に分解する（3〜8個を目安に、細かすぎない）
-- 各サブタスクに作業見積（分）を概算で付ける
-- 締切は親タスクの締切(${dl})当日かそれより前に設定する。親に締切が無ければ緊急度から今日以降に配分
+- 各やりたいことに作業見積（分）を概算で付ける
+- 締切は元のやりたいことの締切(${dl})当日かそれより前に設定する。親に締切が無ければ緊急度から今日以降に配分
 - 目標は親と同じ「${goalName || "（なし）"}」にする（親に目標が無ければ null）
 
 【出力】
 次の形式のJSON配列だけを出力してください（前後に説明文やコードフェンスは不要）:
 [
-  {"title":"サブタスク名","effort":30,"deadline":"YYYY-MM-DD または null","goal":${goalName ? JSON.stringify(goalName) : "null"},"note":"補足 または null"}
+  {"title":"やりたいこと名","effort":30,"deadline":"YYYY-MM-DD または null","goal":${goalName ? JSON.stringify(goalName) : "null"},"note":"補足 または null"}
 ]
 - effort は分単位の整数（不明なら null）
 - deadline は YYYY-MM-DD 形式（不明なら null）`;
@@ -2222,7 +2222,7 @@ function openDecomposeModal(taskId) {
   const goal = task.goalId ? goalById(task.goalId) : null;
   const goalName = goal ? goal.title : null;
 
-  modalTitle.textContent = "タスクを分解";
+  modalTitle.textContent = "やりたいことを分解";
   modalBody.innerHTML = `
     <div class="decompose-parent">
       <div class="bulk-row-title">${esc(task.title)}</div>
@@ -2246,11 +2246,11 @@ function openDecomposeModal(taskId) {
       <textarea id="dec-paste" class="ai-paste" rows="5" placeholder="AIの回答をここに貼り付け…"></textarea>
       <button type="button" class="btn btn-ghost" id="dec-parse">解析</button>
     </details>
-    <label class="ics-opt"><input type="checkbox" id="dec-complete"> 追加後、元のタスクを完了にする</label>
+    <label class="ics-opt"><input type="checkbox" id="dec-complete"> 追加後、元のやりたいことを完了にする</label>
     <div id="dec-preview" class="bulk-preview"></div>
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" id="dec-cancel">閉じる</button>
-      <button type="button" class="btn btn-primary" id="dec-add" disabled>選択したサブタスクを追加</button>
+      <button type="button" class="btn btn-primary" id="dec-add" disabled>選択したやりたいことを追加</button>
     </div>`;
 
   let parsed = [];
@@ -2261,7 +2261,7 @@ function openDecomposeModal(taskId) {
     const box = document.getElementById("dec-preview");
     const addBtn = document.getElementById("dec-add");
     if (!parsed.length) { box.innerHTML = ""; addBtn.disabled = true; return; }
-    box.innerHTML = previewTasksHTML(parsed, "サブタスク", "dec-chk");
+    box.innerHTML = previewTasksHTML(parsed, "やりたいこと", "dec-chk");
     addBtn.disabled = false;
   }
 
@@ -2270,7 +2270,7 @@ function openDecomposeModal(taskId) {
     const arr = extractJsonArray(text);
     if (!arr) { setDecStatus("JSONを読み取れませんでした。生の回答を表示します。"); document.getElementById("dec-preview").innerHTML = rawReplyHTML(text); document.getElementById("dec-add").disabled = true; return; }
     parsed = normalizeParsedTasks(arr);
-    if (!parsed.length) { setDecStatus("有効なサブタスクが見つかりませんでした。"); document.getElementById("dec-preview").innerHTML = rawReplyHTML(text); document.getElementById("dec-add").disabled = true; return; }
+    if (!parsed.length) { setDecStatus("有効なやりたいことが見つかりませんでした。"); document.getElementById("dec-preview").innerHTML = rawReplyHTML(text); document.getElementById("dec-add").disabled = true; return; }
     setDecStatus(`${parsed.length}件を読み取りました。確認して追加してください。`);
     showPreview();
   }
@@ -2309,7 +2309,7 @@ function openDecomposeModal(taskId) {
 
   document.getElementById("dec-add").addEventListener("click", () => {
     const checks = Array.from(document.querySelectorAll("#dec-preview .dec-chk:checked")).map((c) => Number(c.dataset.i));
-    if (!checks.length) { setDecStatus("追加するサブタスクを選んでください。"); return; }
+    if (!checks.length) { setDecStatus("追加するやりたいことを選んでください。"); return; }
     const goalCache = {};
     checks.forEach((i) => {
       const t = parsed[i];
@@ -2336,7 +2336,7 @@ function openDecomposeModal(taskId) {
 }
 
 /* =========================================================
- * 繰り返しタスク（週タスク）— 開いた日にその日のぶんを自動生成
+ * 繰り返し（毎週）— 開いた日にその日のぶんを自動生成
  * ======================================================= */
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -2345,7 +2345,7 @@ function weekdaysLabel(arr) {
   return "毎週 " + arr.slice().sort((a, b) => a - b).map((i) => WEEKDAYS[i]).join("・");
 }
 
-// アプリを開いた日までに到来した「未生成の該当曜日」のタスクを作る。
+// アプリを開いた日までに到来した「未生成の該当曜日」のやりたいことを作る。
 // 取りこぼしは直近14日ぶんまで補完（古すぎる分は作らない）。
 function generateRecurring() {
   if (!state.recurring || !state.recurring.length) return 0;
@@ -2373,16 +2373,16 @@ function generateRecurring() {
 }
 
 function openRecurringModal() {
-  modalTitle.textContent = "繰り返しタスク（週タスク）";
+  modalTitle.textContent = "繰り返し（毎週）";
   const goalOpts = [`<option value="">（未分類）</option>`]
     .concat(state.goals.map((g) => `<option value="${esc(g.id)}">${esc(g.emoji || "🎯")} ${esc(g.title)}</option>`)).join("");
 
   modalBody.innerHTML = `
-    <p class="ai-sub">毎週決まった曜日に自動で作られるタスクです。アプリを開いた日に、その日のぶんが生成されます。</p>
+    <p class="ai-sub">毎週決まった曜日に自動で作られるやりたいことです。アプリを開いた日に、その日のぶんが生成されます。</p>
     <div id="rec-list" class="rec-list"></div>
     <div class="rec-form">
       <div class="rec-form-head" id="rec-form-head">繰り返しを追加</div>
-      <div class="field"><label for="rec-title">タスク名 *</label><input type="text" id="rec-title" placeholder="例）週報を作成する"></div>
+      <div class="field"><label for="rec-title">やりたいこと名 *</label><input type="text" id="rec-title" placeholder="例）週報を作成する"></div>
       <div class="field"><label>曜日（複数可）*</label><div class="weekday-row" id="rec-weekdays">${WEEKDAYS.map((w, i) => `<button type="button" class="preset wd-btn" data-wd="${i}">${w}</button>`).join("")}</div></div>
       <div class="field"><label for="rec-goal">目標</label><select id="rec-goal">${goalOpts}</select></div>
       <div class="field"><label for="rec-effort">作業見積</label><div class="presets" id="rec-effort-presets">${EFFORT_PRESETS.map((p) => `<button type="button" class="preset" data-min="${p.v}">${p.label}</button>`).join("")}</div><input type="number" id="rec-effort" min="0" step="5" placeholder="分で入力（例：30）" style="margin-top:8px"></div>
@@ -2442,7 +2442,7 @@ function openRecurringModal() {
     if (!rule) return;
     if (btn.dataset.rec === "edit") { loadInto(rule); }
     else if (btn.dataset.rec === "del") {
-      if (!confirm("この繰り返しを削除しますか？（生成済みのタスクは残ります）")) return;
+      if (!confirm("この繰り返しを削除しますか？（生成済みのやりたいことは残ります）")) return;
       state.recurring = state.recurring.filter((r) => r.id !== id);
       if (editingId === id) resetForm();
       save();
@@ -2454,7 +2454,7 @@ function openRecurringModal() {
   $("rec-cancel").addEventListener("click", closeModal);
   $("rec-save").addEventListener("click", () => {
     const title = $("rec-title").value.trim();
-    if (!title) { setStatus("タスク名を入力してください。"); $("rec-title").focus(); return; }
+    if (!title) { setStatus("やりたいこと名を入力してください。"); $("rec-title").focus(); return; }
     if (!selectedWd.size) { setStatus("曜日を1つ以上選んでください。"); return; }
     const weekdays = Array.from(selectedWd).sort((a, b) => a - b);
     const goalId = $("rec-goal").value || null;

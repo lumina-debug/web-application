@@ -6,17 +6,17 @@
  *   コンセプト：
  *   - Google カレンダーは「既存予定の閲覧のみ」（readonly）。
  *     予定を見て“空いている時間”を把握するためだけに使う。
- *     タスクを Google に書き込むことはしない（カレンダーにはタスク以外も
+ *     やりたいことを Google に書き込むことはしない（カレンダーにはやりたいこと以外も
  *     色々入っているため、用途を空き時間把握に絞る）。
  *   - ユーザーがカレンダー上を**ドラッグ／タップして「空き時間」枠**を作る。
- *   - アプリがその空き時間へ**未完了タスクを自動配置**（優先度順）。
- *   - 配置したタスク（紫のブロック）は**ドラッグで動かせる**。
+ *   - アプリがその空き時間へ**未完了のやりたいことを自動配置**（優先度順）。
+ *   - 配置したやりたいこと（紫のブロック）は**ドラッグで動かせる**。
  *   - **週表示 / 月表示**を切り替え、前後ナビで任意の週・月へ。
  *
  *   保存（すべて端末ローカル・クラウド非同期）：
  *   - dandori.gcalPrefs  … 表示時間帯・既定所要
  *   - dandori.gcalFree   … 空き時間枠 [{start,end}]（ms）
- *   - dandori.gcalPlan   … 配置したタスク [{id,title,...,start,dur}]
+ *   - dandori.gcalPlan   … 配置したやりたいこと [{id,title,...,start,dur}]
  *
  *   app.js とは window.Dandori（state 参照・priorityOf）で疎結合。
  *   Google 認証は sync.js の window.DandoriCloud ブリッジ経由。
@@ -42,9 +42,9 @@
   let gcalBusy = [];                     // 読み込んだ既存予定
   let cachedRange = null;                // {start,end} 取得済み範囲(ms)
   let freeWindows = loadFree();          // [{start,end}] ms
-  let planRows = loadPlan();             // 配置済みタスク
+  let planRows = loadPlan();             // 配置済みやりたいこと
   let lastUnplaced = [];                 // 直近の自動配置で入りきらなかったもの
-  let selectedIds = null;                // 配置対象タスクid（null=未初期化→全選択）
+  let selectedIds = null;                // 配置対象やりたいことid（null=未初期化→全選択）
   let drag = null;                       // ドラッグ中の状態
   let otherToken = null;                 // 別アカウント読み込み時のアクセストークン {token,exp}
   let render = { startMin: 0, top: 0, cols: [] }; // 週表示の座標系（ドラッグ計算用）
@@ -94,7 +94,7 @@
       "T" + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":00" + sign + p2(Math.floor(a / 60)) + ":" + p2(a % 60);
   }
 
-  /* ---------- app.js のタスク（state 参照） ---------- */
+  /* ---------- app.js のやりたいこと（state 参照） ---------- */
   function prioScore(t) { try { const p = window.Dandori.priorityOf(t); return (p && p.score) || 0; } catch (e) { return 0; } }
   function cmpTasks(a, b) {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
@@ -133,7 +133,7 @@
     return slots.filter((x) => x.e - x.s >= STEP_MS).sort((a, b2) => a.s - b2.s);
   }
 
-  // タスク（cmpTasks済み想定）を空きスロットへ詰める
+  // やりたいこと（cmpTasks済み想定）を空きスロットへ詰める
   function placeTasks(tasks, slots, defDur) {
     slots = slots.map((s) => ({ s: s.s, e: s.e }));
     const rows = [], unplaced = [];
@@ -176,7 +176,7 @@
     if (e <= Date.now()) return "過去の時間です";
     if (r.deadline) { const dl = new Date(r.deadline + "T23:59:59").getTime(); if (e > dl) return "締切（" + r.deadline.slice(5).replace("-", "/") + "）を過ぎています"; }
     for (const b of gcalBusy) { if (b.allDay || b.free) continue; if (b.end > s && b.start < e) return "予定と重なっています"; }
-    for (const o of planRows) { if (o === r) continue; const os = o.start, oe = o.start + o.dur * 60000; if (oe > s && os < e) return "他のタスクと重なっています"; }
+    for (const o of planRows) { if (o === r) continue; const os = o.start, oe = o.start + o.dur * 60000; if (oe > s && os < e) return "他のやりたいことと重なっています"; }
     const inFree = freeWindows.some((w) => w.start <= s && w.end >= e);
     if (!inFree) return "空き時間の外です";
     return "";
@@ -290,7 +290,7 @@
     return out.join("\r\n");
   }
   function downloadICS() {
-    if (!planRows.length) { setStatus("配置したタスクがありません。"); return; }
+    if (!planRows.length) { setStatus("配置したやりたいことがありません。"); return; }
     const blob = new Blob([icsForRows(planRows)], { type: "text/calendar" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -338,7 +338,7 @@
     if (!body) return;
     const durs = [30, 45, 60, 90, 120];
     body.innerHTML =
-      '<p class="sync-sub">Googleカレンダーの予定（灰色）を見ながら、空いている時間を<b>ドラッグ／タップで指定</b>すると、その枠に未完了タスクを<b>自動で配置</b>します。配置したタスク（紫）は<b>ドラッグで移動</b>できます。Googleへは書き込みません（閲覧のみ）。</p>' +
+      '<p class="sync-sub">Googleカレンダーの予定（灰色）を見ながら、空いている時間を<b>ドラッグ／タップで指定</b>すると、その枠に未完了のやりたいことを<b>自動で配置</b>します。配置したやりたいこと（紫）は<b>ドラッグで移動</b>できます。Googleへは書き込みません（閲覧のみ）。</p>' +
 
       '<div class="gcal-toolbar">' +
         '<div class="gcal-nav">' +
@@ -374,11 +374,11 @@
       '<div id="gc-cal"></div>' +
 
       '<div class="gcal-plan-controls">' +
-        '<details class="gcal-tasks-wrap"><summary id="gc-tasks-sum">配置するタスクを選ぶ</summary>' +
+        '<details class="gcal-tasks-wrap"><summary id="gc-tasks-sum">配置するやりたいことを選ぶ</summary>' +
           '<div id="gc-task-list" class="gcal-task-list"></div>' +
         '</details>' +
         '<div class="sync-actions">' +
-          '<button id="gc-auto" class="btn btn-primary">🧮 空き時間にタスクを自動配置</button>' +
+          '<button id="gc-auto" class="btn btn-primary">🧮 空き時間にやりたいことを自動配置</button>' +
           '<button id="gc-clear-plan" class="btn btn-ghost">配置をクリア</button>' +
           '<button id="gc-clear-free" class="btn btn-ghost">空き時間をクリア</button>' +
           '<button id="gc-ics" class="link-btn">📥 .icsで保存（任意）</button>' +
@@ -426,7 +426,7 @@
     q("#gc-auto").addEventListener("click", () => {
       if (!freeWindows.length) { setStatus("先にカレンダーで空き時間を指定してください（空欄をドラッグ）。", true); return; }
       const n = selectedIds.size;
-      if (!n) { setStatus("配置するタスクが選ばれていません。", true); return; }
+      if (!n) { setStatus("配置するやりたいことが選ばれていません。", true); return; }
       autoPlace();
       setStatus("配置しました：" + planRows.length + "件" + (lastUnplaced.length ? "／入りきらず " + lastUnplaced.length + "件" : "") + "。紫のブロックはドラッグで動かせます。");
       renderView();
@@ -445,8 +445,8 @@
   function renderTaskList() {
     const el = q("#gc-task-list"); if (!el) return;
     const tasks = activeTasksSorted();
-    const sum = q("#gc-tasks-sum"); if (sum) sum.textContent = "配置するタスクを選ぶ（" + selectedIds.size + "/" + tasks.length + "）";
-    if (!tasks.length) { el.innerHTML = '<p class="sync-sub">未完了のタスクがありません。先に「＋ タスクを追加」で作成してください。</p>'; return; }
+    const sum = q("#gc-tasks-sum"); if (sum) sum.textContent = "配置するやりたいことを選ぶ（" + selectedIds.size + "/" + tasks.length + "）";
+    if (!tasks.length) { el.innerHTML = '<p class="sync-sub">未完了のやりたいことがありません。先に「＋ やりたいことを追加」で作成してください。</p>'; return; }
     el.innerHTML = tasks.map((t) => {
       const meta = [];
       meta.push(t.effort ? t.effort + "分" : "見積なし→" + prefs.defDur + "分");
@@ -466,9 +466,9 @@
   function renderUnplaced() {
     const el = q("#gc-unplaced"); if (!el) return;
     if (!lastUnplaced.length) { el.innerHTML = ""; return; }
-    el.innerHTML = '<div class="gcal-unplaced"><b>入りきらなかったタスク：</b><ul>' +
+    el.innerHTML = '<div class="gcal-unplaced"><b>入りきらなかったやりたいこと：</b><ul>' +
       lastUnplaced.map((u) => "<li>" + esc(u.title) + "（" + u.dur + "分）</li>").join("") +
-      "</ul>空き時間を増やす・タスクを分解する、などで再度お試しください。</div>";
+      "</ul>空き時間を増やす・やりたいことを分解する、などで再度お試しください。</div>";
   }
 
   /* ---------- 週表示 ---------- */
@@ -527,7 +527,7 @@
         if (e <= s || ymd(s) !== dY) return;
         blocks += blockHTML(topOf(s), (e - s) / 3600000 * HOUR_PX, "b-free-win", "空き " + fmtTime(s) + "–" + fmtTime(e), "空き時間（ドラッグで移動・タップで削除）", ' data-fi="' + wi + '"');
       });
-      // 配置タスク（紫）
+      // 配置やりたいこと（紫）
       planRows.forEach((r, ri) => {
         const s = r.start, e = r.start + r.dur * 60000;
         if (ymd(s) !== dY) return;
@@ -547,7 +547,7 @@
     }
 
     el.innerHTML =
-      '<div class="gcal-legend"><span class="lg lg-busy"></span>Googleの予定　<span class="lg lg-free"></span>空き時間（ドラッグで作成・移動／タップで削除）　<span class="lg lg-task"></span>配置したタスク（ドラッグで移動）</div>' +
+      '<div class="gcal-legend"><span class="lg lg-busy"></span>Googleの予定　<span class="lg lg-free"></span>空き時間（ドラッグで作成・移動／タップで削除）　<span class="lg lg-task"></span>配置したやりたいこと（ドラッグで移動）</div>' +
       '<div class="gcal-cal-scroll"><div class="gcal-cal-grid gcal-week">' + cols + '</div></div>';
 
     // ドラッグ座標系を記録

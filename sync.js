@@ -176,7 +176,7 @@ async function initialSync(userRef) {
   }
 }
 
-// state に実データ（タスク/目標/メモ/週タスク）が無いか
+// state に実データ（やりたいこと/目標/メモ/繰り返し）が無いか
 function stateIsEmpty(s) {
   if (!s) return true;
   const n = (s.tasks && s.tasks.length) || 0;

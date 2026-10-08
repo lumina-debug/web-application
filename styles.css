@@ -514,7 +514,7 @@ body {
 .ics-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-soft); margin-bottom: 10px; }
 .ics-opt input { flex-shrink: 0; }
 
-/* ===== 繰り返しタスク（週タスク） ===== */
+/* ===== 繰り返し（毎週） ===== */
 .rec-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
 .rec-row {
   display: flex; gap: 10px; align-items: flex-start;
@@ -546,7 +546,7 @@ body {
 .gcal-hours input[type="text"] { min-width: 260px; flex: 1 1 220px; }
 .gcal-chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--text-soft); cursor: pointer; }
 .gcal-other-setup { margin-top: 6px; }
-/* タスク選択・操作 */
+/* やりたいこと選択・操作 */
 .gcal-plan-controls { margin-top: 12px; }
 .gcal-tasks-wrap { margin-bottom: 8px; }
 .gcal-tasks-wrap summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--text); }
